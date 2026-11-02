@@ -13,6 +13,8 @@ private struct InspectorDraftSnapshot: Equatable {
     var strokeWidth: Double
     var strokeStyle: LineStyle
     var direction: ConnectionDirection
+    var route: ConnectionRoute
+    var fontSize: Double
     var label: String
     var x: Double
     var y: Double
@@ -33,6 +35,8 @@ struct InspectorView: View {
     @State private var strokeWidth = 1.0
     @State private var strokeStyle: LineStyle = .solid
     @State private var direction: ConnectionDirection = .oneWay
+    @State private var route: ConnectionRoute = .straight
+    @State private var fontSize = 15.0
     @State private var label = ""
     @State private var text = ""
     @State private var imagePath = ""
@@ -54,7 +58,7 @@ struct InspectorView: View {
     private var draftSnapshot: InspectorDraftSnapshot {
         InspectorDraftSnapshot(text: text, imagePath: imagePath, assetIDs: assetIDs, title: title, color: color,
                                strokeColor: strokeColor, strokeWidth: strokeWidth, strokeStyle: strokeStyle,
-                               direction: direction, label: label, x: x, y: y, width: width, height: height)
+                               direction: direction, route: route, fontSize: fontSize, label: label, x: x, y: y, width: width, height: height)
     }
 
     var body: some View {
@@ -130,6 +134,7 @@ struct InspectorView: View {
                     .help("Remove this note from its group so it can move independently")
             }
             geometryFields
+            fontSizeControl
             colors
             strokeControls
         }
@@ -143,6 +148,7 @@ struct InspectorView: View {
             Button("Lock notes inside group") { model.lockNotes(in: group.id) }
                 .help("Lock notes whose centers are inside this group. Notes move together when you drag any member.")
             geometryFields
+            fontSizeControl
             colors
             strokeControls
         }
@@ -153,13 +159,32 @@ struct InspectorView: View {
             Text("From: \(board.notes.first(where: { $0.id == connection.from })?.text ?? connection.from)").lineLimit(2)
             Text("To: \(board.notes.first(where: { $0.id == connection.to })?.text ?? connection.to)").lineLimit(2)
             TextField("Relationship label", text: $label)
+            fontSizeControl
             Picker("Direction", selection: $direction) {
                 Text("One-way →").tag(ConnectionDirection.oneWay)
                 Text("Two-way ↔").tag(ConnectionDirection.twoWay)
                 Text("No arrow").tag(ConnectionDirection.none)
             }
+            Picker("Path", selection: $route) {
+                Text("Straight").tag(ConnectionRoute.straight)
+                Text("Curved").tag(ConnectionRoute.curved)
+                Text("Custom bends").tag(ConnectionRoute.custom)
+            }
+            if route != .straight {
+                Text("Drag the handles on the canvas to shape the connection.").font(.caption).foregroundStyle(.secondary)
+                if route == .custom {
+                    HStack {
+                        Button("Add bend") { changeBend(add: true) }
+                        Button("Remove bend") { changeBend(add: false) }
+                    }
+                }
+            }
             strokeControls
         }
+    }
+
+    private var fontSizeControl: some View {
+        Stepper(value: $fontSize, in: 6...96, step: 1) { Text("Font size: \(Int(fontSize)) pt") }
     }
 
     private var boardProperties: some View {
@@ -317,9 +342,9 @@ struct InspectorView: View {
     }
 
     private var hasDraft: Bool {
-        if let b = baselineNote { return text != b.text || imagePath != (b.imagePath ?? "") || assetIDs != (b.assetIDs ?? []) || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
-        if let b = baselineGroup { return text != b.title || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle, defaultStyle: .dashed) }
-        if let b = baselineConnection { return direction != b.effectiveDirection || label != (b.label ?? "") || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
+        if let b = baselineNote { return fontSize != (b.fontSize ?? 15) || text != b.text || imagePath != (b.imagePath ?? "") || assetIDs != (b.assetIDs ?? []) || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
+        if let b = baselineGroup { return fontSize != (b.fontSize ?? 11) || text != b.title || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle, defaultStyle: .dashed) }
+        if let b = baselineConnection { return fontSize != (b.fontSize ?? 11) || direction != b.effectiveDirection || route != b.effectiveRoute || label != (b.label ?? "") || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
         return title != baselineTitle
     }
 
@@ -342,7 +367,7 @@ struct InspectorView: View {
         guard hasDraft else { saveStatus = "Saved"; return }
         if let baseline = baselineNote {
             guard let latest = current.notes.first(where: { $0.id == baseline.id }) else { blockDraft("The note was deleted elsewhere."); return }
-            let changed = text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle)
+            let changed = fontSize != (baseline.fontSize ?? 15) || text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle)
             guard changed else { saveStatus = "Saved"; return }
             guard latest == baseline else { blockDraft("The note changed elsewhere."); return }
             if model.mutate({ board in
@@ -351,6 +376,7 @@ struct InspectorView: View {
                     _ = board.moveGroup(id: group.id, dx: x - baseline.x, dy: y - baseline.y)
                 } else { board.notes[i].x = x; board.notes[i].y = y }
                 board.notes[i].text = text
+                board.notes[i].fontSize = fontSize
                 board.notes[i].imagePath = imagePath.isEmpty ? nil : imagePath
                 board.notes[i].assetIDs = assetIDs
                 board.notes[i].width = max(80, width); board.notes[i].height = max(50, height); board.notes[i].color = color
@@ -363,7 +389,7 @@ struct InspectorView: View {
             else { model.draftBlocked = true; saveStatus = "Not saved" }
         } else if let baseline = baselineGroup {
             guard let latest = current.groups.first(where: { $0.id == baseline.id }) else { blockDraft("The group was deleted elsewhere."); return }
-            let changed = text != baseline.title || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle, defaultStyle: .dashed)
+            let changed = fontSize != (baseline.fontSize ?? 11) || text != baseline.title || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle, defaultStyle: .dashed)
             guard changed else { saveStatus = "Saved"; return }
             guard latest == baseline else { blockDraft("The group changed elsewhere."); return }
             if model.mutate({ board in
@@ -372,6 +398,7 @@ struct InspectorView: View {
                 board.groups[i].title = text
                 board.groups[i].width = max(80, width); board.groups[i].height = max(50, height); board.groups[i].color = color
                 board.groups[i].strokeColor = strokeColor; board.groups[i].strokeWidth = strokeWidth; board.groups[i].strokeStyle = strokeStyle
+                board.groups[i].fontSize = fontSize
             }) {
                 baselineGroup = model.board?.groups.first(where: { $0.id == baseline.id })
                 if let saved = baselineGroup { x = saved.x; y = saved.y }
@@ -380,12 +407,14 @@ struct InspectorView: View {
             else { model.draftBlocked = true; saveStatus = "Not saved" }
         } else if let baseline = baselineConnection {
             guard let latest = current.connections.first(where: { $0.id == baseline.id }) else { blockDraft("The connection was deleted elsewhere."); return }
-            guard direction != baseline.effectiveDirection || label != (baseline.label ?? "") || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle) else { saveStatus = "Saved"; return }
+            guard fontSize != (baseline.fontSize ?? 11) || direction != baseline.effectiveDirection || route != baseline.effectiveRoute || label != (baseline.label ?? "") || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle) else { saveStatus = "Saved"; return }
             guard latest == baseline else { blockDraft("The connection changed elsewhere."); return }
             if model.mutate({ board in
                 guard let i = board.connections.firstIndex(where: { $0.id == baseline.id }) else { return }
                 board.connections[i].arrow = direction != .none
                 board.connections[i].direction = direction
+                board.connections[i].route = route
+                board.connections[i].fontSize = fontSize
                 board.connections[i].label = label.isEmpty ? nil : label
                 board.connections[i].strokeColor = strokeColor
                 board.connections[i].strokeWidth = strokeWidth; board.connections[i].strokeStyle = strokeStyle
@@ -417,15 +446,31 @@ struct InspectorView: View {
         baselineBoardID = board.id
         title = board.title; baselineTitle = board.title; baselineNote = note; baselineGroup = group; baselineConnection = connection
         if let note {
+            fontSize = note.fontSize ?? 15
             text = note.text; imagePath = note.imagePath ?? ""; assetIDs = note.assetIDs ?? []; color = note.color; x = note.x; y = note.y; width = note.width; height = note.height
             strokeColor = note.strokeColor ?? "#6F7785"; strokeWidth = note.strokeWidth ?? 1; strokeStyle = note.strokeStyle ?? .solid
         } else if let group {
+            fontSize = group.fontSize ?? 11
             text = group.title; color = group.color; x = group.x; y = group.y; width = group.width; height = group.height
             strokeColor = group.strokeColor ?? "#6F7785"; strokeWidth = group.strokeWidth ?? 1; strokeStyle = group.strokeStyle ?? .dashed
         } else if let connection {
-            direction = connection.effectiveDirection; label = connection.label ?? ""; strokeColor = connection.strokeColor ?? "#6F7785"
+            fontSize = connection.fontSize ?? 11
+            direction = connection.effectiveDirection; route = connection.effectiveRoute; label = connection.label ?? ""; strokeColor = connection.strokeColor ?? "#6F7785"
             strokeWidth = connection.strokeWidth ?? 1; strokeStyle = connection.strokeStyle ?? .solid
         }
+    }
+
+    private func changeBend(add: Bool) {
+        savePending()
+        guard !model.draftBlocked, let board = model.board, let edge = board.connections.first(where: { $0.id == model.selectedConnectionID }),
+              let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) else { return }
+        var points = edge.controlPoints(from: from, to: to)
+        if add && points.count < 100 {
+            let last = points.last ?? ConnectionPoint(x: from.x + from.width / 2, y: from.y + from.height / 2)
+            points.append(ConnectionPoint(x: (last.x + to.x + to.width / 2) / 2, y: (last.y + to.y + to.height / 2) / 2))
+        } else if !add && points.count > 1 { points.removeLast() }
+        else { return }
+        if model.mutate({ board in if let index = board.connections.firstIndex(where: { $0.id == edge.id }) { board.connections[index].routePoints = points } }) { loadSelection() }
     }
 
     private func chooseImageLocation() {

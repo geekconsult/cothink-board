@@ -14,8 +14,9 @@ def call(n,name,args):
 assert req(1,'initialize',{'protocolVersion':'2025-11-25'})['protocolVersion']=='2025-11-25'
 assert 'unlock_note' in [tool['name'] for tool in req(2,'tools/list')['tools']]
 _,b=call(3,'create_board',{'title':'Smoke'})
-_,b2=call(4,'edit_board',{'board_id':b['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'a','text':'Hello','x':0,'y':0,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'notes','item':{'id':'b','text':'World','x':200,'y':0,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'connections','item':{'id':'e','from':'a','to':'b','arrow':True}}]})
+_,b2=call(4,'edit_board',{'board_id':b['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'a','text':'Hello','x':0,'y':0,'width':100,'height':60,'color':'#ffffff','fontSize':24}},{'action':'add','collection':'notes','item':{'id':'b','text':'World','x':200,'y':0,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'connections','item':{'id':'e','from':'a','to':'b','arrow':True,'route':'custom','routePoints':[{'x':150,'y':200}],'fontSize':18}}]})
 assert b2['revision']==1 and len(b2['connections'])==1
+_,route_context=call(105,'get_board_context',{'board_id':b['id']});assert route_context['connections'][0]['route']=='custom' and route_context['connections'][0]['routePoints'][0]['y']==200 and route_context['notes'][0]['fontSize']==24
 r,e=call(5,'edit_board',{'board_id':b['id'],'expected_revision':0,'operations':[{'action':'rename','title':'stale'}]});assert r['isError'] and 'conflict' in e.lower(),e
 _,b3=call(6,'edit_board',{'board_id':b['id'],'expected_revision':1,'operations':[{'action':'delete','collection':'notes','id':'a'}]});assert len(b3['notes'])==1 and not b3['connections']
 r,e=call(60,'undo',{'board_id':b['id'],'expected_revision':1});assert r['isError'] and 'changed' in e.lower(),e

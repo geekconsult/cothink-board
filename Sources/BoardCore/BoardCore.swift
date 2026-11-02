@@ -8,6 +8,13 @@ public enum LineStyle: String, Codable, CaseIterable {
 public enum ConnectionDirection: String, Codable, CaseIterable {
     case oneWay, twoWay, none
 }
+public enum ConnectionRoute: String, Codable, CaseIterable {
+    case straight, curved, custom
+}
+public struct ConnectionPoint: Codable, Equatable {
+    public var x: Double, y: Double
+    public init(x: Double, y: Double) { self.x = x; self.y = y }
+}
 
 public enum ResizeCorner: String, CaseIterable {
     case topLeft, topRight, bottomLeft, bottomRight
@@ -48,6 +55,7 @@ public struct Note: Codable, Identifiable, Equatable {
     public var id: String, text: String
     public var x: Double, y: Double, width: Double, height: Double
     public var color: String
+    public var fontSize: Double?
     public var strokeColor: String?
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
@@ -72,10 +80,21 @@ public struct Connection: Codable, Identifiable, Equatable {
     public var arrow: Bool
     public var direction: ConnectionDirection?
     public var label: String?
+    public var fontSize: Double?
     public var strokeColor: String?
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
+    public var route: ConnectionRoute?
+    public var routePoints: [ConnectionPoint]?
     public var effectiveDirection: ConnectionDirection { direction ?? (arrow ? .oneWay : .none) }
+    public var effectiveRoute: ConnectionRoute { route ?? .straight }
+    public func controlPoints(from source: Note, to target: Note) -> [ConnectionPoint] {
+        guard effectiveRoute != .straight else { return [] }
+        let saved = routePoints ?? []
+        if !saved.isEmpty { return effectiveRoute == .curved ? Array(saved.prefix(1)) : saved }
+        return [ConnectionPoint(x: max(0, (source.x + source.width / 2 + target.x + target.width / 2) / 2),
+                                y: max(0, (source.y + source.height / 2 + target.y + target.height / 2) / 2 + 120))]
+    }
     public init(id: String = UUID().uuidString, from: String, to: String, arrow: Bool = true, direction: ConnectionDirection? = nil, label: String? = nil) {
         self.id = id; self.from = from; self.to = to; self.arrow = arrow
         self.direction = direction; self.label = label
@@ -85,6 +104,7 @@ public struct BoardGroup: Codable, Identifiable, Equatable {
     public var id: String, title: String
     public var x: Double, y: Double, width: Double, height: Double
     public var color: String
+    public var fontSize: Double?
     public var strokeColor: String?
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
@@ -296,6 +316,9 @@ public final class BoardStore {
         guard Set(ids).count == ids.count, Set(groupIDs).count == groupIDs.count, Set(edgeIDs).count == edgeIDs.count, !(ids + groupIDs + edgeIDs).contains("") else { throw BoardError.invalid("duplicate or empty IDs") }
         let widths = b.notes.map(\.strokeWidth) + b.groups.map(\.strokeWidth) + b.connections.map(\.strokeWidth)
         guard widths.allSatisfy({ $0 == nil || ($0!.isFinite && (0...20).contains($0!)) }) else { throw BoardError.invalid("stroke width") }
+        let fontSizes = b.notes.map(\.fontSize) + b.groups.map(\.fontSize) + b.connections.map(\.fontSize)
+        guard fontSizes.allSatisfy({ $0 == nil || ($0!.isFinite && (6...96).contains($0!)) }) else { throw BoardError.invalid("font size") }
+        guard b.connections.allSatisfy({ ($0.routePoints ?? []).count <= 100 && ($0.routePoints ?? []).allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.x >= 0 && $0.y >= 0 } }) else { throw BoardError.invalid("connection route points") }
         let noteIDs = Set(ids)
         let assets = b.assets ?? []
         let assetIDs = assets.map(\.id)

@@ -360,6 +360,7 @@ struct WorkspaceView: View {
     @State private var selectionStart: CGPoint?
     @State private var selectionEnd: CGPoint?
     @State private var connectionDrag: ConnectionDrag?
+    @State private var routePointDrag: RoutePointDrag?
     @State private var drawingGroup = false
     @FocusState private var canvasFocused: Bool
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -598,7 +599,11 @@ struct WorkspaceView: View {
             let note = displayed(note)
             return BoardRect(x: note.x, y: note.y, width: note.width, height: note.height)
         }
-        let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0) })
+        let routeRects = board.connections.flatMap { edge -> [BoardRect] in
+            guard let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) else { return [] }
+            return displayedConnection(edge).controlPoints(from: displayed(from), to: displayed(to)).map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
+        }
+        let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0) } + routeRects)
         return ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.76 : 0.68))
@@ -648,7 +653,7 @@ struct WorkspaceView: View {
                 ForEach(board.groups) { group in groupView(group) }
                 ForEach(board.connections) { edge in
                     if let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
-                        ConnectionView(from: displayed(from), to: displayed(to), edge: edge, selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
+                        ConnectionView(from: displayed(from), to: displayed(to), edge: displayedConnection(edge), selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
                             .onTapGesture {
                                 selectConnection(edge.id)
                             }
@@ -679,6 +684,9 @@ struct WorkspaceView: View {
                     connectionHandle(note, board: board)
                 } else if let group = board.groups.first(where: { $0.id == model.selectedGroupID }) {
                     resizeHandles(id: group.id, rect: BoardRect(x: group.x, y: group.y, width: group.width, height: group.height), isNote: false)
+                } else if let edge = board.connections.first(where: { $0.id == model.selectedConnectionID }),
+                          let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
+                    routeHandles(edge, from: displayed(from), to: displayed(to))
                 }
             }
             .frame(width: extent.width, height: extent.height)
@@ -708,6 +716,40 @@ struct WorkspaceView: View {
         guard !model.draftBlocked else { return }
         model.selectedConnectionID = id; model.selectedNoteIDs = []; model.selectedNoteID = nil; model.selectedGroupID = nil
         canvasFocused = true
+    }
+
+    func displayedConnection(_ edge: Connection) -> Connection {
+        var edge = edge
+        if let drag = routePointDrag, drag.edge.id == edge.id { edge.routePoints = drag.points }
+        return edge
+    }
+
+    func routeHandles(_ edge: Connection, from: Note, to: Note) -> some View {
+        let points = displayedConnection(edge).controlPoints(from: from, to: to)
+        return ForEach(Array(points.enumerated()), id: \.offset) { index, point in
+            Circle().fill(Color(nsColor: .controlBackgroundColor))
+                .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
+                .frame(width: 13, height: 13).contentShape(Rectangle().inset(by: -9))
+                .position(x: point.x, y: point.y)
+                .help("Drag to adjust the connection path")
+                .accessibilityLabel("Connection path point \(index + 1)")
+                .gesture(DragGesture(minimumDistance: 1).onChanged { value in
+                    if routePointDrag == nil {
+                        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                        guard !model.draftBlocked, let current = model.board?.connections.first(where: { $0.id == edge.id }) else { return }
+                        let initial = current.controlPoints(from: from, to: to)
+                        guard initial.indices.contains(index) else { return }
+                        routePointDrag = RoutePointDrag(edge: current, index: index, origin: initial[index], points: initial)
+                    }
+                    guard routePointDrag?.edge.id == edge.id, routePointDrag?.index == index, let origin = routePointDrag?.origin else { return }
+                    routePointDrag?.points[index] = ConnectionPoint(x: max(0, origin.x + value.translation.width / zoom), y: max(0, origin.y + value.translation.height / zoom))
+                }.onEnded { _ in
+                    guard let drag = routePointDrag, drag.edge.id == edge.id, drag.index == index else { return }
+                    routePointDrag = nil
+                    guard model.board?.connections.first(where: { $0.id == edge.id }) == drag.edge else { model.error = "The connection changed elsewhere. Please adjust it again."; return }
+                    model.mutate { board in if let i = board.connections.firstIndex(where: { $0.id == edge.id }) { board.connections[i].routePoints = drag.points } }
+                })
+        }
     }
 
     func displayed(_ note: Note) -> Note {
@@ -955,6 +997,12 @@ struct ConnectionDrag {
     let source: String
     var point: CGPoint
 }
+struct RoutePointDrag {
+    let edge: Connection
+    let index: Int
+    let origin: ConnectionPoint
+    var points: [ConnectionPoint]
+}
 
 struct ResizeState {
     let id: String
@@ -986,7 +1034,7 @@ struct GroupTile: View {
         VStack(alignment: .leading) {
             if isEditingTitle {
                 TextField("Group name", text: $title)
-                    .font(.caption.bold())
+                    .font(.system(size: group.fontSize ?? 11, weight: .bold))
                     .textFieldStyle(.plain)
                     .focused($titleFocused)
                     .onSubmit(onFinishEditing)
@@ -994,7 +1042,7 @@ struct GroupTile: View {
                     .onAppear { DispatchQueue.main.async { titleFocused = true } }
                     .onExitCommand(perform: onFinishEditing)
             } else {
-                Text(group.title.uppercased()).font(.caption.bold()).tracking(1).foregroundStyle(.secondary)
+                Text(group.title.uppercased()).font(.system(size: group.fontSize ?? 11, weight: .bold)).tracking(1).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -1022,7 +1070,7 @@ struct NoteTile: View {
             VStack(alignment: .leading, spacing: 6) {
                 if isEditing {
                     TextEditor(text: $text)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: note.fontSize ?? 15, weight: .medium))
                         .foregroundStyle(Color.readableText(on: note.color))
                         .scrollContentBackground(.hidden)
                         .focused($textFocused)
@@ -1032,7 +1080,7 @@ struct NoteTile: View {
                         .onExitCommand(perform: onFinishEditing)
                 } else {
                     Text(note.text.isEmpty ? "Empty note" : note.text)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: note.fontSize ?? 15, weight: .medium))
                         .foregroundStyle(Color.readableText(on: note.color).opacity(note.text.isEmpty ? 0.66 : 1))
                 }
                 if let imagePath, let image = NSImage(contentsOfFile: imagePath) {
@@ -1087,6 +1135,46 @@ struct NoteTile: View {
     }
 }
 
+struct ConnectionGeometry {
+    let path: Path
+    let start: CGPoint
+    let end: CGPoint
+    let startDirection: CGPoint
+    let endDirection: CGPoint
+    let labelPosition: CGPoint
+
+    init(from: Note, to: Note, edge: Connection) {
+        let source = CGPoint(x: from.x + from.width / 2, y: from.y + from.height / 2)
+        let target = CGPoint(x: to.x + to.width / 2, y: to.y + to.height / 2)
+        let controls = edge.controlPoints(from: from, to: to).map { CGPoint(x: $0.x, y: $0.y) }
+        func unit(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+            let dx = b.x - a.x, dy = b.y - a.y, length = hypot(dx, dy)
+            return length > 0.001 ? CGPoint(x: dx / length, y: dy / length) : CGPoint(x: 1, y: 0)
+        }
+        let sourceDir = unit(source, controls.first ?? target)
+        let targetDir = unit(controls.last ?? source, target)
+        func boundary(_ center: CGPoint, _ direction: CGPoint, _ note: Note) -> CGPoint {
+            let distance = min(note.width / max(abs(direction.x), 0.0001), note.height / max(abs(direction.y), 0.0001)) / 2
+            return CGPoint(x: center.x + direction.x * distance, y: center.y + direction.y * distance)
+        }
+        let start = boundary(source, sourceDir, from)
+        let end = boundary(target, CGPoint(x: -targetDir.x, y: -targetDir.y), to)
+        var path = Path(); path.move(to: start)
+        if edge.effectiveRoute == .curved, let control = controls.first {
+            path.addQuadCurve(to: end, control: control)
+            labelPosition = CGPoint(x: (start.x + 2 * control.x + end.x) / 4, y: (start.y + 2 * control.y + end.y) / 4)
+        } else {
+            for point in controls { path.addLine(to: point) }
+            path.addLine(to: end)
+            let points = [start] + controls + [end]
+            let i = (points.count - 1) / 2
+            labelPosition = CGPoint(x: (points[i].x + points[i + 1].x) / 2, y: (points[i].y + points[i + 1].y) / 2)
+        }
+        self.path = path; self.start = start; self.end = end
+        self.startDirection = sourceDir; self.endDirection = targetDir
+    }
+}
+
 struct ConnectionView: View {
     let from: Note
     let to: Note
@@ -1095,56 +1183,41 @@ struct ConnectionView: View {
     let canvasWidth: Double
     let canvasHeight: Double
     var body: some View {
-        let start = CGPoint(x: from.x + from.width / 2, y: from.y + from.height / 2)
-        let end = CGPoint(x: to.x + to.width / 2, y: to.y + to.height / 2)
-        Canvas { context, _ in
-            var line = Path(); line.move(to: start); line.addLine(to: end)
-            if selected { context.stroke(line, with: .color(.accentColor.opacity(0.35)), lineWidth: (edge.strokeWidth ?? 1) + 6) }
-            context.stroke(line, with: .color(Color(hex: edge.strokeColor ?? "#6F7785")), style: StrokeStyle(lineWidth: edge.strokeWidth ?? 1, lineCap: .round, dash: (edge.strokeStyle ?? .solid).dashPattern))
-            let dx = end.x - start.x, dy = end.y - start.y
-            let length = max(1, hypot(dx, dy))
-            let unitX = dx / length, unitY = dy / length
-            func drawArrow(tip: CGPoint, directionX: CGFloat, directionY: CGFloat) {
+        let geometry = ConnectionGeometry(from: from, to: to, edge: edge)
+        return Canvas { context, _ in
+            if selected { context.stroke(geometry.path, with: .color(.accentColor.opacity(0.35)), lineWidth: (edge.strokeWidth ?? 1) + 6) }
+            context.stroke(geometry.path, with: .color(Color(hex: edge.strokeColor ?? "#6F7785")), style: StrokeStyle(lineWidth: edge.strokeWidth ?? 1, lineCap: .round, dash: (edge.strokeStyle ?? .solid).dashPattern))
+            func drawArrow(tip: CGPoint, direction: CGPoint) {
                 var arrow = Path(); arrow.move(to: tip)
-                arrow.addLine(to: CGPoint(x: tip.x - directionX * 12 - directionY * 6, y: tip.y - directionY * 12 + directionX * 6))
+                arrow.addLine(to: CGPoint(x: tip.x - direction.x * 12 - direction.y * 6, y: tip.y - direction.y * 12 + direction.x * 6))
                 arrow.move(to: tip)
-                arrow.addLine(to: CGPoint(x: tip.x - directionX * 12 + directionY * 6, y: tip.y - directionY * 12 - directionX * 6))
+                arrow.addLine(to: CGPoint(x: tip.x - direction.x * 12 + direction.y * 6, y: tip.y - direction.y * 12 - direction.x * 6))
                 context.stroke(arrow, with: .color(Color(hex: edge.strokeColor ?? "#6F7785")), lineWidth: max(1, edge.strokeWidth ?? 1))
             }
-            let direction = edge.effectiveDirection
-            if direction != .none {
-                let targetScale = min(to.width / max(abs(unitX), 0.001), to.height / max(abs(unitY), 0.001)) / 2
-                let targetTip = CGPoint(x: end.x - unitX * targetScale, y: end.y - unitY * targetScale)
-                drawArrow(tip: targetTip, directionX: unitX, directionY: unitY)
-                if direction == .twoWay {
-                    let sourceScale = min(from.width / max(abs(unitX), 0.001), from.height / max(abs(unitY), 0.001)) / 2
-                    let sourceTip = CGPoint(x: start.x + unitX * sourceScale, y: start.y + unitY * sourceScale)
-                    drawArrow(tip: sourceTip, directionX: -unitX, directionY: -unitY)
+            if edge.effectiveDirection != .none {
+                drawArrow(tip: geometry.end, direction: geometry.endDirection)
+                if edge.effectiveDirection == .twoWay {
+                    drawArrow(tip: geometry.start, direction: CGPoint(x: -geometry.startDirection.x, y: -geometry.startDirection.y))
                 }
             }
         }
         .frame(width: canvasWidth, height: canvasHeight)
         .overlay(alignment: .topLeading) {
             if let label = edge.label, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(label)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                Text(label).font(.system(size: edge.fontSize ?? 11, weight: .medium)).lineLimit(1)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(.regularMaterial, in: Capsule())
                     .overlay(Capsule().stroke(.secondary.opacity(0.2), lineWidth: 0.5))
-                    .position(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
-                    .allowsHitTesting(false)
+                    .position(geometry.labelPosition).allowsHitTesting(false)
             }
         }
-        .contentShape(ConnectionHitShape(start: start, end: end).stroke(lineWidth: 14))
+        .contentShape(ConnectionHitShape(line: geometry.path).stroke(lineWidth: 14))
     }
 }
 
 struct ConnectionHitShape: Shape {
-    let start: CGPoint
-    let end: CGPoint
-    func path(in rect: CGRect) -> Path { var path = Path(); path.move(to: start); path.addLine(to: end); return path }
+    let line: Path
+    func path(in rect: CGRect) -> Path { line }
 }
 
 extension Color {

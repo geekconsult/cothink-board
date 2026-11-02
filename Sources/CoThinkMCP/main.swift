@@ -46,7 +46,7 @@ let tools: [[String: Any]] = [
     tool("set_board_metadata", "Set board tags, flagged and color. Supply the observed board revision; omit fields to leave them unchanged.", ["board_id": stringSchema, "expected_revision": integerSchema, "tags": ["type": "array", "items": stringSchema], "flagged": ["type": "boolean"], "color": stringSchema], ["board_id", "expected_revision"]),
     tool("list_boards", "List available boards with their current contents and revisions.", [:]),
     tool("get_board", "Read a complete board, including its project folder, assets attached to notes, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
-    tool("get_board_context", "Read a graph-oriented overview of every note, group, connection, label, direction, attachment, and spatial position on a board.", ["board_id": stringSchema], ["board_id"]),
+    tool("get_board_context", "Read a graph-oriented overview of every note, group, connection, label, direction, path, attachment, and spatial position on a board.", ["board_id": stringSchema], ["board_id"]),
     tool("read_project_file", "Read an attached project file by asset ID. Returns extracted text for PDFs and text files, image content for pictures, or the original resource for other file types. The asset must belong to the board's project library.", ["board_id": stringSchema, "asset_id": stringSchema], ["board_id", "asset_id"]),
     tool("read_note_image", "Read the image attached directly to a note using the legacy image attachment field. Returns the image to the agent.", ["board_id": stringSchema, "note_id": stringSchema], ["board_id", "note_id"]),
     tool("board_history", "Read the actor, revision, and date of each board change.", ["board_id": stringSchema], ["board_id"]),
@@ -54,7 +54,7 @@ let tools: [[String: Any]] = [
     tool("delete_board", "Delete a board and its history if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("replace_board", "Atomically replace an existing complete board. Provide its last observed revision to prevent overwriting concurrent edits.", ["board": objectSchema, "expected_revision": integerSchema], ["board", "expected_revision"]),
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
-    tool("edit_board", "Apply ordered edits as one undoable change. Each operation has an action, collection when applicable, and item or id. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. For add, item must contain all required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes may include assetIDs referencing board assets and imagePath for legacy direct image links. Boards may include projectFilesPath, the absolute folder holding their assets. Connection fields label and direction describe the relationship; direction is oneWay, twoWay, or none. For old connections without direction, arrow=true means oneWay and arrow=false means none. Asset relativePath must stay within projectFilesPath. IDs are unique nonempty strings, geometry is numeric and width/height are positive, color is a hex string, arrow is boolean, and connection endpoints and assetIDs must reference existing items. Groups may have memberIDs containing note IDs; moving a grouped note moves the group and its members. Notes, groups and connections may have strokeColor (#RRGGBB), strokeWidth (0 to 20), and strokeStyle (solid, dashed, dotted). Use get_board to obtain revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
+    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
     tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
     tool("undo", "Undo the latest board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
@@ -208,6 +208,7 @@ func boardContext(_ board: Board) -> [String: Any] {
         return [
             "id": note.id,
             "text": note.text,
+            "fontSize": note.fontSize ?? 15,
             "position": ["x": note.x, "y": note.y, "width": note.width, "height": note.height],
             "group_ids": groups.map(\.id),
             "group_titles": groups.map(\.title),
@@ -221,6 +222,7 @@ func boardContext(_ board: Board) -> [String: Any] {
         return [
             "id": group.id,
             "title": group.title,
+            "fontSize": group.fontSize ?? 11,
             "position": ["x": group.x, "y": group.y, "width": group.width, "height": group.height],
             "member_note_ids": members.map(\.id),
             "member_note_texts": members.map(\.text)
@@ -232,7 +234,10 @@ func boardContext(_ board: Board) -> [String: Any] {
             "from": ["id": connection.from, "text": notesByID[connection.from]?.text ?? "(missing note)"],
             "to": ["id": connection.to, "text": notesByID[connection.to]?.text ?? "(missing note)"],
             "label": connection.label ?? "",
-            "direction": connection.effectiveDirection.rawValue
+            "direction": connection.effectiveDirection.rawValue,
+            "route": connection.effectiveRoute.rawValue,
+            "routePoints": (notesByID[connection.from].flatMap { from in notesByID[connection.to].map { connection.controlPoints(from: from, to: $0) } } ?? []).map { ["x": $0.x, "y": $0.y] },
+            "fontSize": connection.fontSize ?? 11
         ]
     }
     return [

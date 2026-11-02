@@ -2,6 +2,27 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testConnectionRoutesAndFontSizesPersistAndValidate() throws {
+        let store = try store()
+        var board = Board(notes: [Note(id: "a"), Note(id: "b", x: 500)])
+        board.notes[0].fontSize = 24
+        var group = BoardGroup(id: "g"); group.fontSize = 20; board.groups = [group]
+        var edge = Connection(from: "a", to: "b")
+        edge.route = .custom; edge.routePoints = [ConnectionPoint(x: 300, y: 400), ConnectionPoint(x: 450, y: 400)]; edge.fontSize = 18
+        board.connections = [edge]
+        let saved = try store.importBoard(board, actor: "user")
+        let reopened = try store.get(saved.id)
+        XCTAssertEqual(reopened.connections[0].routePoints, edge.routePoints)
+        XCTAssertEqual(reopened.connections[0].effectiveRoute, .custom)
+        XCTAssertEqual(reopened.notes[0].fontSize, 24)
+        XCTAssertEqual(reopened.groups[0].fontSize, 20)
+        XCTAssertEqual(reopened.connections[0].fontSize, 18)
+        var bad = reopened; bad.connections[0].routePoints = [ConnectionPoint(x: -1, y: 0)]
+        XCTAssertThrowsError(try store.replace(bad, expectedRevision: reopened.revision, actor: "agent"))
+        bad = reopened; bad.notes[0].fontSize = 500
+        XCTAssertThrowsError(try store.replace(bad, expectedRevision: reopened.revision, actor: "agent"))
+        XCTAssertEqual(Connection(from: "a", to: "b").effectiveRoute, .straight)
+    }
     func testCanvasExtentExpandsForObjectBounds() {
         let empty = BoardRect.canvasExtent(containing: [])
         XCTAssertEqual(empty.width, 3000); XCTAssertEqual(empty.height, 2000)
