@@ -29,6 +29,12 @@ struct CoThinkApp: App {
                 Button("Undo Board Change") { model.undo() }.keyboardShortcut("z", modifiers: .command)
                 Button("Redo Board Change") { model.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
             }
+            CommandMenu("View") {
+                Button("Zoom In") { NotificationCenter.default.post(name: .zoomInCommand, object: nil) }.keyboardShortcut("+", modifiers: .command).disabled(model.board == nil)
+                Button("Zoom Out") { NotificationCenter.default.post(name: .zoomOutCommand, object: nil) }.keyboardShortcut("-", modifiers: .command).disabled(model.board == nil)
+                Divider()
+                Button("Actual Size") { NotificationCenter.default.post(name: .zoomResetCommand, object: nil) }.keyboardShortcut("0", modifiers: .command).disabled(model.board == nil)
+            }
         }
     }
 }
@@ -368,6 +374,9 @@ struct WorkspaceView: View {
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
         .onReceive(NotificationCenter.default.publisher(for: .showProjectFiles)) { _ in openProjectFiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomInCommand)) { _ in zoomStep(1) }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomOutCommand)) { _ in zoomStep(-1) }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in zoom = 1.0 }
         .onExitCommand { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false }
         .alert("Unable to complete action", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -455,6 +464,12 @@ struct WorkspaceView: View {
         }
     }
 
+    func zoomStep(_ direction: Double) {
+        // Round to one decimal first so repeated steps don't drift (e.g. 0.7 + 0.1 → 0.7999…)
+        let base = (zoom * 10).rounded()
+        zoom = min(2.0, max(0.5, (base + direction) / 10))
+    }
+
     func toolbar(_ board: Board?) -> some View {
         HStack(spacing: 10) {
             Button(action: toggleSidebar) {
@@ -485,9 +500,9 @@ struct WorkspaceView: View {
                 model.beginConnection()
             }.modifier(GlassControl()).disabled(model.selectedNoteID == nil || board == nil).help("Select a note then select another (⌘L), or drag its connection handle")
             Divider().frame(height: 24)
-            Button { zoom = max(0.5, zoom - 0.1) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out").disabled(board == nil)
+            Button { zoomStep(-1) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out (⌘−)").disabled(board == nil)
             Text("\(Int(zoom * 100))%").font(.caption.monospacedDigit()).frame(width: 40)
-            Button { zoom = min(2, zoom + 0.1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in").disabled(board == nil)
+            Button { zoomStep(1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in (⌘+)").disabled(board == nil)
             Menu {
                 Button { appearanceMode = "system" } label: { themeLabel("System", selected: appearanceMode == "system") }
                 Button { appearanceMode = "light" } label: { themeLabel("Light", selected: appearanceMode == "light") }
@@ -1087,6 +1102,9 @@ extension Notification.Name {
     static let flushBoardDraft = Notification.Name("CoThinkFlushBoardDraft")
     static let createGroupCommand = Notification.Name("CoThinkCreateGroupCommand")
     static let showProjectFiles = Notification.Name("CoThinkShowProjectFiles")
+    static let zoomInCommand = Notification.Name("CoThinkZoomInCommand")
+    static let zoomOutCommand = Notification.Name("CoThinkZoomOutCommand")
+    static let zoomResetCommand = Notification.Name("CoThinkZoomResetCommand")
 }
 
 struct MCPSetupView: View {
