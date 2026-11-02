@@ -44,6 +44,7 @@ let tools: [[String: Any]] = [
     tool("replace_board", "Atomically replace an existing complete board. Provide its last observed revision to prevent overwriting concurrent edits.", ["board": objectSchema, "expected_revision": integerSchema], ["board", "expected_revision"]),
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
     tool("edit_board", "Apply ordered edits as one undoable change. Each operation has an action, collection when applicable, and item or id. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. For add, item must contain all required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes may include assetIDs referencing board assets and imagePath for legacy direct image links. Boards may include projectFilesPath, the absolute folder holding their assets. Connection fields label and direction describe the relationship; direction is oneWay, twoWay, or none. For old connections without direction, arrow=true means oneWay and arrow=false means none. Asset relativePath must stay within projectFilesPath. IDs are unique nonempty strings, geometry is numeric and width/height are positive, color is a hex string, arrow is boolean, and connection endpoints and assetIDs must reference existing items. Groups may have memberIDs containing note IDs; moving a grouped note moves the group and its members. Notes, groups and connections may have strokeColor (#RRGGBB), strokeWidth (0 to 20), and strokeStyle (solid, dashed, dotted). Use get_board to obtain revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
+    tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
     tool("undo", "Undo the latest board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("redo", "Redo the latest undone board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"])
@@ -118,6 +119,66 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
     return try store.replace(decode(board, as: Board.self), expectedRevision: revision, actor: actor)
 }
 
+func addProjectFile(_ args: [String: Any], store: BoardStore) throws -> Board {
+    let boardID = try string(args, "board_id")
+    let expectedRevision = try integer(args, "expected_revision")
+    let sourcePath = try string(args, "source_path")
+    let board = try store.get(boardID)
+    guard board.revision == expectedRevision else { throw BoardError.conflict }
+    let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        throw ToolFailure(message: "source_path must point to an existing file")
+    }
+    let noteID = args["note_id"] as? String
+    if let noteID, !board.notes.contains(where: { $0.id == noteID }) { throw ToolFailure(message: "Note not found: \(noteID)") }
+
+    let destinationDirectory = board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? store.defaultProjectFilesDirectory(for: board.id)
+    try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+
+    let usedPaths = Set(board.projectAssets.map(\.relativePath))
+    let sourceAlreadyInProject = source.deletingLastPathComponent().standardizedFileURL == destinationDirectory.standardizedFileURL
+    let fileName = source.lastPathComponent
+    let relativePath: String
+    var copiedURL: URL?
+    if sourceAlreadyInProject && !usedPaths.contains(fileName) {
+        relativePath = fileName
+    } else {
+        relativePath = uniqueProjectFileName(fileName, in: destinationDirectory, reserved: usedPaths)
+        let destination = destinationDirectory.appendingPathComponent(relativePath)
+        try FileManager.default.copyItem(at: source, to: destination)
+        copiedURL = destination
+    }
+
+    var updated = board
+    let asset = ProjectAsset(name: fileName, relativePath: relativePath)
+    updated.projectFilesPath = destinationDirectory.path
+    updated.assets = board.projectAssets + [asset]
+    if let noteID, let noteIndex = updated.notes.firstIndex(where: { $0.id == noteID }) {
+        updated.notes[noteIndex].assetIDs = (updated.notes[noteIndex].assetIDs ?? []) + [asset.id]
+    }
+    do {
+        return try store.replace(updated, expectedRevision: expectedRevision, actor: actor)
+    } catch {
+        if let copiedURL { try? FileManager.default.removeItem(at: copiedURL) }
+        throw error
+    }
+}
+
+func uniqueProjectFileName(_ fileName: String, in directory: URL, reserved: Set<String>) -> String {
+    let source = URL(fileURLWithPath: fileName)
+    let base = source.deletingPathExtension().lastPathComponent
+    let ext = source.pathExtension
+    var candidate = fileName
+    var suffix = 2
+    while reserved.contains(candidate) || FileManager.default.fileExists(atPath: directory.appendingPathComponent(candidate).path) {
+        candidate = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
+        suffix += 1
+    }
+    return candidate
+}
+
 func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> Any {
     if readOnly && !["list_boards", "get_board", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
     switch name {
@@ -133,6 +194,7 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         guard let board = args["board"] else { throw ToolFailure(message: "Missing board") }
         return try object(store.importBoard(decode(board, as: Board.self), actor: actor))
     case "edit_board": return try object(editBoard(args, store: store))
+    case "add_project_file": return try object(addProjectFile(args, store: store))
     case "unlock_note":
         let id = try string(args, "board_id"), noteID = try string(args, "note_id"), revision = try integer(args, "expected_revision")
         var board = try store.get(id)
