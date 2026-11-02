@@ -33,6 +33,12 @@ _,copy=call(88,'unlock_note',{'board_id':copy['id'],'note_id':'b','expected_revi
 _,copy=call(89,'edit_board',{'board_id':copy['id'],'expected_revision':6,'operations':[{'action':'update','collection':'notes','id':'b','fields':{'x':320}}]});assert copy['notes'][0]['x']==320 and copy['groups'][0]['x']==80
 _,copy=call(86,'edit_board',{'board_id':copy['id'],'expected_revision':7,'operations':[{'action':'delete','collection':'notes','id':'b'}]});assert copy['groups'][0]['memberIDs']==[]
 r,e=call(82,'replace_board',{'board':copy,'expected_revision':0});assert r['isError'] and 'changed' in e.lower(),e
+_,lst=call(100,'create_board_list',{'title':'Research'})
+lst.update(description='Research context',boardIDs=[b['id']],tags=['planning'],flagged=True,color='#669AD2')
+_,lst=call(101,'update_board_list',{'list':lst,'expected_revision':0})
+_,ctx=call(102,'get_board_context',{'board_id':b['id']});assert ctx['lists'][0]['description']=='Research context'
+r,e=call(103,'update_board_list',{'list':lst,'expected_revision':0});assert r['isError'] and 'changed' in e.lower()
+_,lists=call(104,'list_board_lists',{});assert lists[0]['boardIDs']==[b['id']]
 _,extra=call(90,'create_board',{'title':'Delete check'})
 r,e=call(91,'delete_board',{'board_id':extra['id'],'expected_revision':1});assert r['isError'] and 'changed' in e.lower(),e
 _,deleted=call(92,'delete_board',{'board_id':extra['id'],'expected_revision':0});assert deleted['deleted']
@@ -40,6 +46,8 @@ p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
 r,e=call(10,'create_board',{'title':'forbidden'});assert r['isError'] and 'read-only' in e
+_,lists=call(12,'list_board_lists',{});assert lists[0]['title']=='Research'
+r,e=call(13,'delete_board_list',{'list_id':lists[0]['id'],'expected_revision':lists[0]['revision']});assert r['isError'] and 'read-only' in e
 _,b=call(11,'get_board',{'board_id':b['id']});assert len(b['notes'])==1
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0
 temporary_home.cleanup()

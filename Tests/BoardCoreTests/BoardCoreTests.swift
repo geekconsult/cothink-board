@@ -2,6 +2,24 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testBoardListPersistenceConflictsAndBoardRemoval() throws {
+        let store = try store()
+        let board = try store.create(title: "Project", actor: "user")
+        var list = try store.createList(title: "Research")
+        list.description = "Related work"; list.boardIDs = [board.id]; list.tags = ["planning"]; list.flagged = true
+        let saved = try store.replaceList(list, expectedRevision: 0)
+        XCTAssertEqual(try store.lists().first, saved)
+        XCTAssertThrowsError(try store.replaceList(list, expectedRevision: 0))
+        var invalid = saved; invalid.boardIDs.append("missing")
+        XCTAssertThrowsError(try store.replaceList(invalid, expectedRevision: saved.revision))
+        try store.delete(board.id, expectedRevision: board.revision)
+        let after = try XCTUnwrap(store.lists().first)
+        XCTAssertEqual(after.boardIDs, [])
+        XCTAssertEqual(after.revision, saved.revision + 1)
+        XCTAssertThrowsError(try store.deleteList(after.id, expectedRevision: saved.revision))
+        try store.deleteList(after.id, expectedRevision: after.revision)
+        XCTAssertTrue(try store.lists().isEmpty)
+    }
     func testBoardTitleDraftDistinguishesNoEditFromRealConflict() {
         XCTAssertEqual(BoardTitleDraft.decision(baseline: "Alpha", draft: "Alpha", current: "Beta"), .unchanged)
         XCTAssertEqual(BoardTitleDraft.decision(baseline: "Alpha", draft: "My edit", current: "Beta"), .conflict)

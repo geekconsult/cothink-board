@@ -42,6 +42,7 @@ struct CoThinkApp: App {
 @MainActor
 final class BoardViewModel: ObservableObject {
     @Published var boards: [Board] = []
+    @Published var boardLists: [BoardList] = []
     @Published var history: [Change] = []
     @Published var draftBlocked = false
     @Published var board: Board?
@@ -66,6 +67,7 @@ final class BoardViewModel: ObservableObject {
     func refresh() throws {
         guard let store else { return }
         boards = try store.list()
+        boardLists = try store.lists()
         if let current = board {
             if boards.contains(where: { $0.id == current.id }) {
                 let updated = try store.get(current.id)
@@ -120,6 +122,25 @@ final class BoardViewModel: ObservableObject {
             try refresh()
             if let first = boards.first { selectBoard(first.id) }
         } catch { self.error = error.localizedDescription }
+    }
+
+    func createList() {
+        do { _ = try store?.createList(title: "Untitled list"); try refresh() } catch { self.error = error.localizedDescription }
+    }
+    func saveList(_ list: BoardList) -> Bool {
+        do { _ = try store?.replaceList(list, expectedRevision: list.revision); try refresh(); return true }
+        catch { self.error = error.localizedDescription; try? refresh(); return false }
+    }
+    func deleteList(_ list: BoardList) {
+        do { try store?.deleteList(list.id, expectedRevision: list.revision); try refresh() }
+        catch { self.error = error.localizedDescription; try? refresh() }
+    }
+    func saveBoardSettings(_ updated: Board) -> Bool {
+        do {
+            guard let store else { return false }
+            board = try store.replace(updated, expectedRevision: updated.revision, actor: "user")
+            try refresh(); return true
+        } catch { self.error = error.localizedDescription; try? refresh(); return false }
     }
 
     @discardableResult
@@ -331,6 +352,8 @@ struct WorkspaceView: View {
     @State private var showingDeleteBoard = false
     @State private var showingMCP = false
     @State private var showingProjectFiles = false
+    @State private var showingListManager = false
+    @State private var showingBoardSettings = false
     @State private var draggingID: String?
     @State private var dragTranslation: CGSize = .zero
     @State private var resizeState: ResizeState?
@@ -391,6 +414,8 @@ struct WorkspaceView: View {
                     .frame(minWidth: 640, minHeight: 420)
             }
         }
+        .sheet(isPresented: $showingListManager) { ListManagerView(model: model).frame(minWidth: 650, minHeight: 470) }
+        .sheet(isPresented: $showingBoardSettings) { if let board = model.board { BoardSettingsView(model: model, board: board).frame(width: 450) } }
     }
 
     var workspaceBackground: some View {
@@ -411,21 +436,35 @@ struct WorkspaceView: View {
                     Text("Your boards").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { showingListManager = true } label: { Image(systemName: "folder.badge.gearshape") }.help("Manage lists")
                 Button(action: model.createBoard) { Image(systemName: "plus") }.help("New board")
             }.padding(18)
             TextField("Search boards and notes", text: $search)
                 .textFieldStyle(.roundedBorder).padding(.horizontal, 14).padding(.bottom, 8)
             List(selection: Binding(get: { model.board?.id }, set: { if let id = $0 { model.selectBoard(id) } })) {
+                ForEach(model.boardLists) { list in
+                    Section {
+                        ForEach(model.boards.filter { list.boardIDs.contains($0.id) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })) }) { board in
+                            Label(board.title, systemImage: board.flagged == true ? "flag.fill" : "rectangle.on.rectangle").foregroundStyle(Color(hex: board.color ?? "#7A8BA8")).tag(board.id)
+                        }
+                    } header: { Label(list.title, systemImage: list.flagged ? "flag.fill" : "folder").foregroundStyle(Color(hex: list.color)).help(list.description) }
+                }
+                Section("All boards") {
                 ForEach(model.boards.filter { board in
-                    search.isEmpty || board.title.localizedCaseInsensitiveContains(search) || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
+                    search.isEmpty || board.title.localizedCaseInsensitiveContains(search) || (board.tags ?? []).contains(where: { $0.localizedCaseInsensitiveContains(search) }) || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
                 }) { board in
-                    Label(board.title, systemImage: "rectangle.on.rectangle").tag(board.id)
+                    Label(board.title, systemImage: board.flagged == true ? "flag.fill" : "rectangle.on.rectangle").foregroundStyle(Color(hex: board.color ?? "#7A8BA8")).tag(board.id)
+                }
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden)
             Divider()
             HStack {
                 Button("Import", systemImage: "square.and.arrow.down", action: model.importBoard)
                 Spacer()
+                Button {
+                    NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                    if !model.draftBlocked { showingBoardSettings = true }
+                } label: { Image(systemName: "slider.horizontal.3") }.disabled(model.board == nil).help("Board settings")
                 Button { showingDeleteBoard = true } label: { Image(systemName: "trash") }.disabled(model.board == nil).help("Delete board")
             }.padding(14)
         }.background(.regularMaterial)

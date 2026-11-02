@@ -92,6 +92,9 @@ public struct Board: Codable, Identifiable, Equatable {
     public var notes: [Note], connections: [Connection], groups: [BoardGroup]
     public var projectFilesPath: String?
     public var assets: [ProjectAsset]?
+    public var tags: [String]? = nil
+    public var flagged: Bool? = nil
+    public var color: String? = nil
     public init(version: Int = 1, id: String = UUID().uuidString, title: String = "Untitled Board", revision: Int = 0, notes: [Note] = [], connections: [Connection] = [], groups: [BoardGroup] = [], projectFilesPath: String? = nil, assets: [ProjectAsset]? = []) {
         self.version = version; self.id = id; self.title = title; self.revision = revision; self.notes = notes; self.connections = connections; self.groups = groups
         self.projectFilesPath = projectFilesPath; self.assets = assets
@@ -170,7 +173,18 @@ public struct Change: Codable, Equatable {
     public var revision: Int
     public var date: Date
 }
-private struct Database: Codable { var entries: [Entry] = [] }
+public struct BoardList: Codable, Identifiable, Equatable {
+    public var id: String = UUID().uuidString
+    public var revision: Int = 0
+    public var title: String
+    public var description: String = ""
+    public var boardIDs: [String] = []
+    public var tags: [String] = []
+    public var flagged: Bool = false
+    public var color: String = "#7A8BA8"
+    public init(title: String) { self.title = title }
+}
+private struct Database: Codable { var entries: [Entry] = []; var lists: [BoardList]? = nil }
 
 public final class BoardStore {
     private let directory: URL
@@ -200,6 +214,28 @@ public final class BoardStore {
         return result
     }
     public func list() throws -> [Board] { try transact { $0.entries.map(\.board) } }
+    public func lists() throws -> [BoardList] { try transact { $0.lists ?? [] } }
+    public func createList(title: String) throws -> BoardList {
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BoardError.invalid("list title") }
+        return try transact(write: true) { db in let item = BoardList(title: title); db.lists = (db.lists ?? []) + [item]; return item }
+    }
+    public func replaceList(_ list: BoardList, expectedRevision: Int) throws -> BoardList {
+        guard !list.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, Set(list.boardIDs).count == list.boardIDs.count else { throw BoardError.invalid("list title or board IDs") }
+        return try transact(write: true) { db in
+            var lists = db.lists ?? []
+            guard let index = lists.firstIndex(where: { $0.id == list.id }) else { throw BoardError.notFound }
+            guard lists[index].revision == expectedRevision else { throw BoardError.conflict }
+            guard Set(list.boardIDs).isSubset(of: Set(db.entries.map { $0.board.id })) else { throw BoardError.invalid("list references missing boards") }
+            var next = list; next.revision = expectedRevision + 1; lists[index] = next; db.lists = lists; return next
+        }
+    }
+    public func deleteList(_ id: String, expectedRevision: Int) throws {
+        try transact(write: true) { db in
+            var lists = db.lists ?? []; guard let index = lists.firstIndex(where: { $0.id == id }) else { throw BoardError.notFound }
+            guard lists[index].revision == expectedRevision else { throw BoardError.conflict }
+            lists.remove(at: index); db.lists = lists
+        }
+    }
     public func get(_ id: String) throws -> Board { try transact { db in guard let e = db.entries.first(where: { $0.board.id == id }) else { throw BoardError.notFound }; return e.board } }
     public func history(_ id: String) throws -> [Change] { try transact { db in guard let e = db.entries.first(where: { $0.board.id == id }) else { throw BoardError.notFound }; return e.history } }
     public func create(title: String, actor: String) throws -> Board {
@@ -225,7 +261,7 @@ public final class BoardStore {
             return next
         }
     }
-    public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i) } }
+    public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i); if var lists = db.lists { for index in lists.indices where lists[index].boardIDs.contains(id) { lists[index].boardIDs.removeAll { $0 == id }; lists[index].revision += 1 }; db.lists = lists } } }
     public func undo(_ id: String, actor: String, expectedRevision: Int? = nil) throws -> Board { try travel(id, actor: actor, backwards: true, expectedRevision: expectedRevision) }
     public func redo(_ id: String, actor: String, expectedRevision: Int? = nil) throws -> Board { try travel(id, actor: actor, backwards: false, expectedRevision: expectedRevision) }
     private func travel(_ id: String, actor: String, backwards: Bool, expectedRevision: Int?) throws -> Board {

@@ -39,6 +39,11 @@ func tool(_ name: String, _ description: String, _ properties: [String: Any], _ 
     ["name": name, "description": description, "inputSchema": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]
 }
 let tools: [[String: Any]] = [
+    tool("list_board_lists", "Read all board lists, descriptions, tags, flags, colors, board IDs and revisions.", [:]),
+    tool("create_board_list", "Create a board list.", ["title": stringSchema], ["title"]),
+    tool("update_board_list", "Replace a board list with the complete list object returned by list_board_lists, using its observed revision. Fields include title, description, boardIDs, tags, flagged and color.", ["list": objectSchema, "expected_revision": integerSchema], ["list", "expected_revision"]),
+    tool("delete_board_list", "Delete a list without deleting its boards.", ["list_id": stringSchema, "expected_revision": integerSchema], ["list_id", "expected_revision"]),
+    tool("set_board_metadata", "Set board tags, flagged and color. Supply the observed board revision; omit fields to leave them unchanged.", ["board_id": stringSchema, "expected_revision": integerSchema, "tags": ["type": "array", "items": stringSchema], "flagged": ["type": "boolean"], "color": stringSchema], ["board_id", "expected_revision"]),
     tool("list_boards", "List available boards with their current contents and revisions.", [:]),
     tool("get_board", "Read a complete board, including its project folder, assets attached to notes, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
     tool("get_board_context", "Read a graph-oriented overview of every note, group, connection, label, direction, attachment, and spatial position on a board.", ["board_id": stringSchema], ["board_id"]),
@@ -311,11 +316,28 @@ func readNoteImage(_ args: [String: Any], store: BoardStore) throws -> MCPToolCo
 }
 
 func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> Any {
-    if readOnly && !["list_boards", "get_board", "get_board_context", "read_project_file", "read_note_image", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
+    if readOnly && !["list_boards", "list_board_lists", "get_board", "get_board_context", "read_project_file", "read_note_image", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
     switch name {
+    case "list_board_lists": return try object(store.lists())
+    case "create_board_list": return try object(store.createList(title: string(args, "title")))
+    case "update_board_list":
+        guard let value = args["list"] else { throw ToolFailure(message: "Missing list") }
+        return try object(store.replaceList(decode(value, as: BoardList.self), expectedRevision: integer(args, "expected_revision")))
+    case "delete_board_list": try store.deleteList(string(args, "list_id"), expectedRevision: integer(args, "expected_revision")); return ["deleted": true]
+    case "set_board_metadata":
+        var board = try store.get(string(args, "board_id"))
+        if let tags = args["tags"] as? [String] { board.tags = tags }
+        if let flagged = args["flagged"] as? Bool { board.flagged = flagged }
+        if let color = args["color"] as? String { board.color = color }
+        return try object(store.replace(board, expectedRevision: integer(args, "expected_revision"), actor: actor))
     case "list_boards": return try object(store.list())
     case "get_board": return try object(store.get(string(args, "board_id")))
-    case "get_board_context": return boardContext(try store.get(string(args, "board_id")))
+    case "get_board_context":
+        let board = try store.get(string(args, "board_id"))
+        var context = boardContext(board)
+        context["lists"] = try object(store.lists().filter { $0.boardIDs.contains(board.id) })
+        context["board_metadata"] = ["tags": board.tags ?? [], "flagged": board.flagged ?? false, "color": board.color ?? ""] as [String: Any]
+        return context
     case "read_project_file": return try readProjectFile(args, store: store)
     case "read_note_image": return try readNoteImage(args, store: store)
     case "board_history": return try object(store.history(string(args, "board_id")))
