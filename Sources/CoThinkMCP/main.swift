@@ -37,13 +37,13 @@ func tool(_ name: String, _ description: String, _ properties: [String: Any], _ 
 }
 let tools: [[String: Any]] = [
     tool("list_boards", "List available boards with their current contents and revisions.", [:]),
-    tool("get_board", "Read a complete board, including note positions, attached image paths, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
+    tool("get_board", "Read a complete board, including its project folder, assets attached to notes, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
     tool("board_history", "Read the actor, revision, and date of each board change.", ["board_id": stringSchema], ["board_id"]),
     tool("create_board", "Create an empty board.", ["title": stringSchema], ["title"]),
     tool("delete_board", "Delete a board and its history if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("replace_board", "Atomically replace an existing complete board. Provide its last observed revision to prevent overwriting concurrent edits.", ["board": objectSchema, "expected_revision": integerSchema], ["board", "expected_revision"]),
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
-    tool("edit_board", "Apply ordered edits as one undoable change. Each operation has an action, collection when applicable, and item or id. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups. For add, item must contain all required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}. Optional note field imagePath stores the absolute path to an attached image file. Optional connection fields label and direction describe the relationship; direction is oneWay, twoWay, or none. For old connections without direction, arrow=true means oneWay and arrow=false means none. IDs are unique nonempty strings, geometry is numeric and width/height are positive, color is a hex string, arrow is boolean, and endpoints are note IDs. Groups may have memberIDs containing note IDs; moving a grouped note moves the group and its members. Notes, groups and connections may have strokeColor (#RRGGBB), strokeWidth (0 to 20), and strokeStyle (solid, dashed, dotted). Use get_board to obtain revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
+    tool("edit_board", "Apply ordered edits as one undoable change. Each operation has an action, collection when applicable, and item or id. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. For add, item must contain all required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes may include assetIDs referencing board assets and imagePath for legacy direct image links. Boards may include projectFilesPath, the absolute folder holding their assets. Connection fields label and direction describe the relationship; direction is oneWay, twoWay, or none. For old connections without direction, arrow=true means oneWay and arrow=false means none. Asset relativePath must stay within projectFilesPath. IDs are unique nonempty strings, geometry is numeric and width/height are positive, color is a hex string, arrow is boolean, and connection endpoints and assetIDs must reference existing items. Groups may have memberIDs containing note IDs; moving a grouped note moves the group and its members. Notes, groups and connections may have strokeColor (#RRGGBB), strokeWidth (0 to 20), and strokeStyle (solid, dashed, dotted). Use get_board to obtain revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
     tool("undo", "Undo the latest board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("redo", "Redo the latest undone board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"])
@@ -62,7 +62,8 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
             continue
         }
         let collection = try string(operation, "collection")
-        guard ["notes", "connections", "groups"].contains(collection), var items = board[collection] as? [[String: Any]] else { throw ToolFailure(message: "Invalid collection: \(collection)") }
+        guard ["notes", "connections", "groups", "assets"].contains(collection) else { throw ToolFailure(message: "Invalid collection: \(collection)") }
+        var items = board[collection] as? [[String: Any]] ?? []
         switch action {
         case "add":
             guard let item = operation["item"] as? [String: Any], let itemID = item["id"] as? String, !itemID.isEmpty else { throw ToolFailure(message: "add requires an item with a nonempty id") }
@@ -102,6 +103,12 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
                     }
                     board["groups"] = groups
                 }
+            }
+            if collection == "assets", var notes = board["notes"] as? [[String: Any]] {
+                for i in notes.indices {
+                    if let assetIDs = notes[i]["assetIDs"] as? [String] { notes[i]["assetIDs"] = assetIDs.filter { $0 != itemID } }
+                }
+                board["notes"] = notes
             }
         default:
             throw ToolFailure(message: "Unknown action: \(action)")

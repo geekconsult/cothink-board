@@ -44,9 +44,19 @@ public struct Note: Codable, Identifiable, Equatable {
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
     public var imagePath: String?
+    public var assetIDs: [String]?
     public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil) {
         self.id = id; self.text = text; self.x = x; self.y = y; self.width = width; self.height = height; self.color = color
         self.imagePath = imagePath
+        self.assetIDs = []
+    }
+}
+public struct ProjectAsset: Codable, Identifiable, Equatable {
+    public var id: String
+    public var name: String
+    public var relativePath: String
+    public init(id: String = UUID().uuidString, name: String, relativePath: String) {
+        self.id = id; self.name = name; self.relativePath = relativePath
     }
 }
 public struct Connection: Codable, Identifiable, Equatable {
@@ -80,11 +90,16 @@ public struct Board: Codable, Identifiable, Equatable {
     public var id: String, title: String
     public var revision: Int
     public var notes: [Note], connections: [Connection], groups: [BoardGroup]
-    public init(version: Int = 1, id: String = UUID().uuidString, title: String = "Untitled Board", revision: Int = 0, notes: [Note] = [], connections: [Connection] = [], groups: [BoardGroup] = []) {
+    public var projectFilesPath: String?
+    public var assets: [ProjectAsset]?
+    public init(version: Int = 1, id: String = UUID().uuidString, title: String = "Untitled Board", revision: Int = 0, notes: [Note] = [], connections: [Connection] = [], groups: [BoardGroup] = [], projectFilesPath: String? = nil, assets: [ProjectAsset]? = []) {
         self.version = version; self.id = id; self.title = title; self.revision = revision; self.notes = notes; self.connections = connections; self.groups = groups
+        self.projectFilesPath = projectFilesPath; self.assets = assets
     }
 }
 public extension Board {
+    var projectAssets: [ProjectAsset] { assets ?? [] }
+
     @discardableResult
     mutating func unlockNote(id: String) -> Bool {
         var changed = false
@@ -166,6 +181,9 @@ public final class BoardStore {
         else { self.directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CoThinkBoard", isDirectory: true) }
         try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
     }
+    public func defaultProjectFilesDirectory(for boardID: String) -> URL {
+        directory.appendingPathComponent("Projects", isDirectory: true).appendingPathComponent(boardID, isDirectory: true)
+    }
     private func transact<T>(write: Bool = false, _ block: (inout Database) throws -> T) throws -> T {
         let fd = open(directory.appendingPathComponent("store.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
@@ -235,6 +253,14 @@ public final class BoardStore {
         let widths = b.notes.map(\.strokeWidth) + b.groups.map(\.strokeWidth) + b.connections.map(\.strokeWidth)
         guard widths.allSatisfy({ $0 == nil || ($0!.isFinite && (0...20).contains($0!)) }) else { throw BoardError.invalid("stroke width") }
         let noteIDs = Set(ids)
+        let assets = b.assets ?? []
+        let assetIDs = assets.map(\.id)
+        guard Set(assetIDs).count == assetIDs.count, !assetIDs.contains(""),
+              assets.allSatisfy({ !$0.name.isEmpty && !$0.relativePath.isEmpty && !$0.relativePath.hasPrefix("/") && !$0.relativePath.split(separator: "/").contains("..") }),
+              b.notes.allSatisfy({
+                  let attached = $0.assetIDs ?? []
+                  return Set(attached).count == attached.count && Set(attached).isSubset(of: Set(assetIDs))
+              }) else { throw BoardError.invalid("project assets") }
         guard b.groups.allSatisfy({ group in
             guard let members = group.memberIDs else { return true }
             return Set(members).count == members.count && members.allSatisfy(noteIDs.contains)

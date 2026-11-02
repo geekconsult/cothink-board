@@ -6,6 +6,7 @@ import BoardCore
 private struct InspectorDraftSnapshot: Equatable {
     var text: String
     var imagePath: String
+    var assetIDs: [String]
     var title: String
     var color: String
     var strokeColor: String
@@ -35,6 +36,7 @@ struct InspectorView: View {
     @State private var label = ""
     @State private var text = ""
     @State private var imagePath = ""
+    @State private var assetIDs: [String] = []
     @State private var color = "#FFF1AF"
     @State private var x = 0.0
     @State private var y = 0.0
@@ -50,7 +52,7 @@ struct InspectorView: View {
     private var group: BoardGroup? { board.groups.first { $0.id == model.selectedGroupID } }
     private var connection: Connection? { board.connections.first { $0.id == model.selectedConnectionID } }
     private var draftSnapshot: InspectorDraftSnapshot {
-        InspectorDraftSnapshot(text: text, imagePath: imagePath, title: title, color: color,
+        InspectorDraftSnapshot(text: text, imagePath: imagePath, assetIDs: assetIDs, title: title, color: color,
                                strokeColor: strokeColor, strokeWidth: strokeWidth, strokeStyle: strokeStyle,
                                direction: direction, label: label, x: x, y: y, width: width, height: height)
     }
@@ -121,6 +123,7 @@ struct InspectorView: View {
             Text("IDEA").font(.caption.bold()).foregroundStyle(.secondary)
             TextEditor(text: $text).font(.body).frame(minHeight: 100).overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             imageAttachmentControls
+            projectAttachmentControls
             if let group = board.groupContaining(noteID: note.id) {
                 Label("Locked in \(group.title)", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
                 Button("Unlock from group", systemImage: "lock.open") { model.unlockNote(note.id) }
@@ -213,6 +216,56 @@ struct InspectorView: View {
         }
     }
 
+    private var projectAttachmentControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("PROJECT FILE LINKS").font(.caption.bold()).foregroundStyle(.secondary)
+            HStack {
+                Menu {
+                    if board.projectAssets.isEmpty {
+                        Text("No files in this project")
+                    } else {
+                        ForEach(board.projectAssets) { asset in
+                            Button(asset.name, systemImage: assetSymbol(asset.name)) {
+                                if !assetIDs.contains(asset.id) { assetIDs.append(asset.id) }
+                            }
+                            .disabled(assetIDs.contains(asset.id))
+                        }
+                    }
+                } label: {
+                    Label("Attach from Project…", systemImage: "paperclip")
+                }
+                Button("Manage Files…", systemImage: "folder") {
+                    NotificationCenter.default.post(name: .showProjectFiles, object: nil)
+                }
+            }
+            ForEach(board.projectAssets.filter { assetIDs.contains($0.id) }) { asset in
+                HStack {
+                    Image(systemName: assetSymbol(asset.name)).foregroundStyle(.secondary)
+                    Text(asset.name).lineLimit(1).help(asset.name)
+                    Spacer()
+                    Button { openProjectAsset(asset) } label: { Image(systemName: "arrow.up.right.square") }
+                        .buttonStyle(.borderless).help("Open file")
+                    Button { assetIDs.removeAll { $0 == asset.id } } label: { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.borderless).help("Remove link from note")
+                }
+                .font(.caption)
+            }
+        }
+    }
+
+    private func assetSymbol(_ name: String) -> String {
+        let ext = URL(fileURLWithPath: name).pathExtension
+        if UTType(filenameExtension: ext)?.conforms(to: .image) == true { return "photo" }
+        if ext.lowercased() == "pdf" { return "doc.richtext" }
+        return "doc"
+    }
+
+    private func openProjectAsset(_ asset: ProjectAsset) {
+        let folder = board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? model.defaultProjectFilesDirectory(for: board.id)
+        NSWorkspace.shared.open(folder.appendingPathComponent(asset.relativePath))
+    }
+
     func numeric(_ label: String, _ value: Binding<Double>) -> some View {
         HStack(spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.secondary)
@@ -264,7 +317,7 @@ struct InspectorView: View {
     }
 
     private var hasDraft: Bool {
-        if let b = baselineNote { return text != b.text || imagePath != (b.imagePath ?? "") || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
+        if let b = baselineNote { return text != b.text || imagePath != (b.imagePath ?? "") || assetIDs != (b.assetIDs ?? []) || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
         if let b = baselineGroup { return text != b.title || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle, defaultStyle: .dashed) }
         if let b = baselineConnection { return direction != b.effectiveDirection || label != (b.label ?? "") || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
         return title != baselineTitle
@@ -289,7 +342,7 @@ struct InspectorView: View {
         guard hasDraft else { saveStatus = "Saved"; return }
         if let baseline = baselineNote {
             guard let latest = current.notes.first(where: { $0.id == baseline.id }) else { blockDraft("The note was deleted elsewhere."); return }
-            let changed = text != baseline.text || imagePath != (baseline.imagePath ?? "") || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle)
+            let changed = text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle)
             guard changed else { saveStatus = "Saved"; return }
             guard latest == baseline else { blockDraft("The note changed elsewhere."); return }
             if model.mutate({ board in
@@ -299,6 +352,7 @@ struct InspectorView: View {
                 } else { board.notes[i].x = x; board.notes[i].y = y }
                 board.notes[i].text = text
                 board.notes[i].imagePath = imagePath.isEmpty ? nil : imagePath
+                board.notes[i].assetIDs = assetIDs
                 board.notes[i].width = max(80, width); board.notes[i].height = max(50, height); board.notes[i].color = color
                 board.notes[i].strokeColor = strokeColor; board.notes[i].strokeWidth = strokeWidth; board.notes[i].strokeStyle = strokeStyle
             }) {
@@ -363,7 +417,7 @@ struct InspectorView: View {
         baselineBoardID = board.id
         title = board.title; baselineTitle = board.title; baselineNote = note; baselineGroup = group; baselineConnection = connection
         if let note {
-            text = note.text; imagePath = note.imagePath ?? ""; color = note.color; x = note.x; y = note.y; width = note.width; height = note.height
+            text = note.text; imagePath = note.imagePath ?? ""; assetIDs = note.assetIDs ?? []; color = note.color; x = note.x; y = note.y; width = note.width; height = note.height
             strokeColor = note.strokeColor ?? "#6F7785"; strokeWidth = note.strokeWidth ?? 1; strokeStyle = note.strokeStyle ?? .solid
         } else if let group {
             text = group.title; color = group.color; x = group.x; y = group.y; width = group.width; height = group.height

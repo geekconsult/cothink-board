@@ -10,3 +10,4 @@
 - Architect evaluation: the requested cross-family design arena is unavailable with the current model access. This design is a single-team decision, not a cross-family verdict.
 
 - Appearance: the supplied transparent mascot is bundled as the app icon and sidebar logo. The toolbar offers system, light, and dark appearances. Native Liquid Glass is used on supported macOS releases and system materials provide the fallback. Note text is chosen against its fill color for contrast.
+- Project files: each board has a separate managed asset folder. The board stores a configurable folder path and asset metadata with relative file paths; notes refer to assets by ID. JSON export includes links and metadata, not file bytes. Moving the project folder through the app copies managed files and updates the base path.

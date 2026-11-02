@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import UniformTypeIdentifiers
 import BoardCore
 
 @main
@@ -73,6 +74,13 @@ final class BoardViewModel: ObservableObject {
 
     func poll() {
         do { try refresh() } catch { self.error = error.localizedDescription }
+    }
+
+    func defaultProjectFilesDirectory(for boardID: String) -> URL {
+        if let store { return store.defaultProjectFilesDirectory(for: boardID) }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/CoThinkBoard/Projects", isDirectory: true)
+            .appendingPathComponent(boardID, isDirectory: true)
     }
 
     func selectBoard(_ id: String) {
@@ -315,6 +323,7 @@ struct WorkspaceView: View {
     @State private var inlineSaveTask: Task<Void, Never>?
     @State private var showingDeleteBoard = false
     @State private var showingMCP = false
+    @State private var showingProjectFiles = false
     @State private var draggingID: String?
     @State private var dragTranslation: CGSize = .zero
     @State private var resizeState: ResizeState?
@@ -358,6 +367,7 @@ struct WorkspaceView: View {
               : Color(red: 0.58, green: 0.25, blue: 0.13))
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
+        .onReceive(NotificationCenter.default.publisher(for: .showProjectFiles)) { _ in openProjectFiles() }
         .onExitCommand { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false }
         .alert("Unable to complete action", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -365,6 +375,12 @@ struct WorkspaceView: View {
         .confirmationDialog("Delete this board?", isPresented: $showingDeleteBoard) {
             Button("Delete Board", role: .destructive) { model.deleteBoard() }
         } message: { Text("This removes the board and its history from this Mac.") }
+        .sheet(isPresented: $showingProjectFiles) {
+            if let board = model.board {
+                ProjectFilesView(model: model, boardID: board.id)
+                    .frame(minWidth: 640, minHeight: 420)
+            }
+        }
     }
 
     var workspaceBackground: some View {
@@ -419,6 +435,13 @@ struct WorkspaceView: View {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
             showInspector.toggle()
         }
+    }
+
+    func openProjectFiles() {
+        guard model.board != nil else { return }
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !model.draftBlocked else { return }
+        showingProjectFiles = true
     }
 
     func requestGroup() {
@@ -479,6 +502,9 @@ struct WorkspaceView: View {
             .help("Appearance: system, light or dark")
             .accessibilityLabel("Appearance")
             .accessibilityValue(appearanceMode.capitalized)
+            Button("Files", systemImage: "folder", action: openProjectFiles)
+                .help("Manage files for this board")
+                .disabled(board == nil)
             Button("MCP", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
                 .help("Connect an AI agent")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
@@ -565,7 +591,7 @@ struct WorkspaceView: View {
                             })
                     }
                 }
-                ForEach(board.notes) { note in noteView(note) }
+                ForEach(board.notes) { note in noteView(note, board: board) }
                 if let start = selectionStart, let end = selectionEnd {
                     let rect = BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y)
                     Rectangle().fill(Color.accentColor.opacity(0.12))
@@ -687,12 +713,15 @@ struct WorkspaceView: View {
         }
     }
 
-    func noteView(_ note: Note) -> some View {
+    func noteView(_ note: Note, board: Board) -> some View {
         NoteTile(
             note: displayed(note),
             selected: model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id),
             isEditing: editingObjectID == note.id && !editingGroupTitle,
             imagePath: note.imagePath,
+            assets: board.projectAssets,
+            projectFilesDirectory: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? model.defaultProjectFilesDirectory(for: board.id),
             text: Binding(get: { inlineText }, set: { inlineText = $0; scheduleInlineSave() }),
             onFinishEditing: finishInlineEditing
         )
@@ -904,6 +933,8 @@ struct NoteTile: View {
     let selected: Bool
     let isEditing: Bool
     let imagePath: String?
+    let assets: [ProjectAsset]
+    let projectFilesDirectory: URL
     @Binding var text: String
     let onFinishEditing: () -> Void
     @FocusState private var textFocused: Bool
@@ -932,6 +963,33 @@ struct NoteTile: View {
                         .scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: max(32, note.height * 0.42))
                         .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .allowsHitTesting(false)
+                }
+                ForEach(assets.filter { note.assetIDs?.contains($0.id) == true }) { asset in
+                    let url = projectFilesDirectory.appendingPathComponent(asset.relativePath)
+                    if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true,
+                       let image = NSImage(contentsOf: url) {
+                        Button { NSWorkspace.shared.open(url) } label: {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: max(28, note.height * 0.35))
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open \(asset.name)")
+                    } else {
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            Label(asset.name, systemImage: assetSymbol(asset.name))
+                                .font(.caption)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open \(asset.name)")
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -942,6 +1000,12 @@ struct NoteTile: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: StrokeStyle(lineWidth: note.strokeWidth ?? 1, lineCap: .round, dash: (note.strokeStyle ?? .solid).dashPattern)))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 1))
             .shadow(color: .black.opacity(0.07), radius: 5, y: 2)
+    }
+
+    private func assetSymbol(_ name: String) -> String {
+        let ext = URL(fileURLWithPath: name).pathExtension
+        if ext.lowercased() == "pdf" { return "doc.richtext" }
+        return "doc"
     }
 }
 
@@ -1022,6 +1086,7 @@ extension Color {
 extension Notification.Name {
     static let flushBoardDraft = Notification.Name("CoThinkFlushBoardDraft")
     static let createGroupCommand = Notification.Name("CoThinkCreateGroupCommand")
+    static let showProjectFiles = Notification.Name("CoThinkShowProjectFiles")
 }
 
 struct MCPSetupView: View {
