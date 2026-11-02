@@ -60,6 +60,7 @@ The canvas has a fixed extent. Groups created by dragging include notes whose ce
 | New group | Shift-Command-G |
 | Connect selected note, then click target | Command-L |
 | Zoom in / out | Command-plus / Command-minus |
+| Zoom with trackpad | Pinch in / out over the canvas |
 | Actual size | Command-0 |
 | Delete selected object (while the canvas has focus) | Delete |
 | Delete selected object from the menu | Shift-Command-Delete |

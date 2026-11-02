@@ -322,6 +322,7 @@ struct WorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var zoom = 1.0
+    @State private var pinchMagnification: CGFloat = 1
     @State private var search = ""
     @State private var editingObjectID: String?
     @State private var editingGroupTitle = false
@@ -501,7 +502,7 @@ struct WorkspaceView: View {
             }.modifier(GlassControl()).disabled(model.selectedNoteID == nil || board == nil).help("Select a note then select another (⌘L), or drag its connection handle")
             Divider().frame(height: 24)
             Button { zoomStep(-1) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out (⌘−)").disabled(board == nil)
-            Text("\(Int(zoom * 100))%").font(.caption.monospacedDigit()).frame(width: 40)
+            Text("\(Int(zoom * 100))%").font(.caption.monospacedDigit()).frame(width: 40).help("Pinch with the trackpad to zoom the canvas")
             Button { zoomStep(1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in (⌘+)").disabled(board == nil)
             Menu {
                 Button { appearanceMode = "system" } label: { themeLabel("System", selected: appearanceMode == "system") }
@@ -641,6 +642,13 @@ struct WorkspaceView: View {
             guard !(NSApp.keyWindow?.firstResponder is NSTextView), !(NSApp.keyWindow?.firstResponder is NSTextField) else { return }
             model.deleteSelection()
         }
+        .simultaneousGesture(MagnificationGesture()
+            .onChanged { value in
+                let factor = value / pinchMagnification
+                pinchMagnification = value
+                zoom = min(2.0, max(0.5, zoom * Double(factor)))
+            }
+            .onEnded { _ in pinchMagnification = 1 })
     }
 
     func selectConnection(_ id: String) {
