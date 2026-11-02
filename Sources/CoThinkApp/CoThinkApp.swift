@@ -445,15 +445,15 @@ struct WorkspaceView: View {
                 ForEach(model.boardLists) { list in
                     Section {
                         ForEach(model.boards.filter { list.boardIDs.contains($0.id) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })) }) { board in
-                            Label(board.title, systemImage: board.flagged == true ? "flag.fill" : "rectangle.on.rectangle").foregroundStyle(Color(hex: board.color ?? "#7A8BA8")).tag(board.id)
+                            boardSidebarLabel(board).tag(board.id)
                         }
-                    } header: { Label(list.title, systemImage: list.flagged ? "flag.fill" : "folder").foregroundStyle(Color(hex: list.color)).help(list.description) }
+                    } header: { HStack { Label(list.title, systemImage: "folder"); if list.flagged { Image(systemName: "flag.fill") } }.foregroundStyle(Color(hex: list.color)).help(list.description) }
                 }
                 Section("All boards") {
                 ForEach(model.boards.filter { board in
                     search.isEmpty || board.title.localizedCaseInsensitiveContains(search) || (board.tags ?? []).contains(where: { $0.localizedCaseInsensitiveContains(search) }) || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
                 }) { board in
-                    Label(board.title, systemImage: board.flagged == true ? "flag.fill" : "rectangle.on.rectangle").foregroundStyle(Color(hex: board.color ?? "#7A8BA8")).tag(board.id)
+                    boardSidebarLabel(board).tag(board.id)
                 }
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden)
@@ -468,6 +468,13 @@ struct WorkspaceView: View {
                 Button { showingDeleteBoard = true } label: { Image(systemName: "trash") }.disabled(model.board == nil).help("Delete board")
             }.padding(14)
         }.background(.regularMaterial)
+    }
+
+    func boardSidebarLabel(_ board: Board) -> some View {
+        HStack {
+            Label(board.title, systemImage: "square.grid.2x2")
+            if board.flagged == true { Image(systemName: "flag.fill").font(.caption) }
+        }.foregroundStyle(Color(hex: board.color ?? "#7A8BA8"))
     }
 
     func toggleSidebar() {

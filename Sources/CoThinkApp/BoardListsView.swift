@@ -10,14 +10,24 @@ struct ListManagerView: View {
     @State private var draft: BoardList?
     @State private var tags = ""
     @State private var confirmDelete = false
+    @State private var confirmDiscard = false
 
     var body: some View {
+        VStack(spacing: 0) {
+        HStack {
+            Text("Manage Lists").font(.headline)
+            Spacer()
+            Button { close() } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
+                .buttonStyle(.plain).help("Close").accessibilityLabel("Close list manager")
+                .keyboardShortcut(.cancelAction)
+        }.padding(.horizontal, 18).padding(.vertical, 12)
+        Divider()
         HStack(spacing: 0) {
             VStack {
                 HStack { Text("Lists").font(.headline); Spacer(); Button { model.createList() } label: { Image(systemName: "plus") }.help("New list") }
                 List(selection: $selectedID) {
                     ForEach(model.boardLists) { list in
-                        Label(list.title, systemImage: list.flagged ? "flag.fill" : "folder").tag(list.id)
+                        HStack { Label(list.title, systemImage: "folder"); if list.flagged { Image(systemName: "flag.fill").font(.caption) } }.tag(list.id)
                     }
                 }
             }.frame(width: 200).padding()
@@ -54,10 +64,21 @@ struct ListManagerView: View {
                 }.padding()
             } else { Text("Select a list or create one.").foregroundStyle(.secondary).frame(maxWidth: .infinity) }
         }
+        }
         .onChange(of: selectedID) { _, id in draft = model.boardLists.first { $0.id == id }; tags = draft?.tags.joined(separator: ", ") ?? "" }
         .confirmationDialog("Delete this list? Boards will remain available.", isPresented: $confirmDelete) {
             Button("Delete List", role: .destructive) { if let draft { model.deleteList(draft) }; selectedID = nil; draft = nil }
         }
+        .confirmationDialog("Discard unsaved changes?", isPresented: $confirmDiscard) {
+            Button("Discard Changes", role: .destructive) { dismiss() }
+        }
+    }
+
+    private func close() {
+        if let draft, let saved = model.boardLists.first(where: { $0.id == draft.id }),
+           draft != saved || tags != saved.tags.joined(separator: ", ") {
+            confirmDiscard = true
+        } else { dismiss() }
     }
 
     private func binding<T>(_ keyPath: WritableKeyPath<BoardList, T>) -> Binding<T> {
