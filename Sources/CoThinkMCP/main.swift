@@ -1,5 +1,8 @@
 import Foundation
 import CoreFoundation
+import AppKit
+import PDFKit
+import UniformTypeIdentifiers
 
 import BoardCore
 
@@ -38,6 +41,9 @@ func tool(_ name: String, _ description: String, _ properties: [String: Any], _ 
 let tools: [[String: Any]] = [
     tool("list_boards", "List available boards with their current contents and revisions.", [:]),
     tool("get_board", "Read a complete board, including its project folder, assets attached to notes, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
+    tool("get_board_context", "Read a graph-oriented overview of every note, group, connection, label, direction, attachment, and spatial position on a board.", ["board_id": stringSchema], ["board_id"]),
+    tool("read_project_file", "Read an attached project file by asset ID. Returns extracted text for PDFs and text files, image content for pictures, or the original resource for other file types. The asset must belong to the board's project library.", ["board_id": stringSchema, "asset_id": stringSchema], ["board_id", "asset_id"]),
+    tool("read_note_image", "Read the image attached directly to a note using the legacy image attachment field. Returns the image to the agent.", ["board_id": stringSchema, "note_id": stringSchema], ["board_id", "note_id"]),
     tool("board_history", "Read the actor, revision, and date of each board change.", ["board_id": stringSchema], ["board_id"]),
     tool("create_board", "Create an empty board.", ["title": stringSchema], ["title"]),
     tool("delete_board", "Delete a board and its history if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
@@ -179,11 +185,139 @@ func uniqueProjectFileName(_ fileName: String, in directory: URL, reserved: Set<
     return candidate
 }
 
+struct MCPToolContent {
+    let blocks: [[String: Any]]
+}
+
+func boardContext(_ board: Board) -> [String: Any] {
+    let notesByID = Dictionary(uniqueKeysWithValues: board.notes.map { ($0.id, $0) })
+    let groupsByNote = Dictionary(grouping: board.groups.flatMap { group in
+        (group.memberIDs ?? []).map { (noteID: $0, group: group) }
+    }, by: \.noteID)
+    let assetsByID = Dictionary(uniqueKeysWithValues: board.projectAssets.map { ($0.id, $0) })
+
+    let notes: [[String: Any]] = board.notes.map { note in
+        let groups = (groupsByNote[note.id] ?? []).map { $0.group }
+        let attachments = (note.assetIDs ?? []).compactMap { assetsByID[$0] }.map { ["asset_id": $0.id, "name": $0.name] }
+        let connected = board.connections.filter { $0.from == note.id || $0.to == note.id }.map { $0.id }
+        return [
+            "id": note.id,
+            "text": note.text,
+            "position": ["x": note.x, "y": note.y, "width": note.width, "height": note.height],
+            "group_ids": groups.map(\.id),
+            "group_titles": groups.map(\.title),
+            "connection_ids": connected,
+            "attachments": attachments,
+            "has_legacy_image": note.imagePath != nil
+        ]
+    }
+    let groups: [[String: Any]] = board.groups.map { group in
+        let members = (group.memberIDs ?? []).compactMap { notesByID[$0] }
+        return [
+            "id": group.id,
+            "title": group.title,
+            "position": ["x": group.x, "y": group.y, "width": group.width, "height": group.height],
+            "member_note_ids": members.map(\.id),
+            "member_note_texts": members.map(\.text)
+        ]
+    }
+    let connections: [[String: Any]] = board.connections.map { connection in
+        [
+            "id": connection.id,
+            "from": ["id": connection.from, "text": notesByID[connection.from]?.text ?? "(missing note)"],
+            "to": ["id": connection.to, "text": notesByID[connection.to]?.text ?? "(missing note)"],
+            "label": connection.label ?? "",
+            "direction": connection.effectiveDirection.rawValue
+        ]
+    }
+    return [
+        "board": ["id": board.id, "title": board.title, "revision": board.revision],
+        "summary": ["note_count": notes.count, "group_count": groups.count, "connection_count": connections.count, "asset_count": board.projectAssets.count],
+        "notes": notes,
+        "groups": groups,
+        "connections": connections,
+        "unconnected_note_ids": board.notes.filter { note in !board.connections.contains { $0.from == note.id || $0.to == note.id } }.map(\.id),
+        "project_files": board.projectAssets.map { ["asset_id": $0.id, "name": $0.name] }
+    ]
+}
+
+func readProjectFile(_ args: [String: Any], store: BoardStore) throws -> MCPToolContent {
+    let board = try store.get(string(args, "board_id"))
+    let assetID = try string(args, "asset_id")
+    guard let asset = board.projectAssets.first(where: { $0.id == assetID }) else { throw ToolFailure(message: "Project file not found on this board: \(assetID)") }
+    guard !asset.relativePath.isEmpty, !asset.relativePath.hasPrefix("/"), !asset.relativePath.split(separator: "/").contains("..") else {
+        throw ToolFailure(message: "Project file path is invalid")
+    }
+    let root = (board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? store.defaultProjectFilesDirectory(for: board.id))
+        .standardizedFileURL.resolvingSymlinksInPath()
+    let fileURL = root.appendingPathComponent(asset.relativePath).standardizedFileURL.resolvingSymlinksInPath()
+    guard fileURL.path.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/") else {
+        throw ToolFailure(message: "Project file resolves outside the board's project folder")
+    }
+    let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+    guard values.isRegularFile == true, let size = values.fileSize, size <= 50 * 1024 * 1024 else {
+        throw ToolFailure(message: "Project file is missing or exceeds the 50 MB MCP read limit")
+    }
+    let data = try Data(contentsOf: fileURL)
+    let mime = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+    let metadata = "Attached file: \(asset.name) (\(asset.id), \(mime), \(size) bytes)"
+
+    if mime.hasPrefix("image/") {
+        return MCPToolContent(blocks: [["type": "text", "text": metadata], ["type": "image", "data": data.base64EncodedString(), "mimeType": mime]])
+    }
+    if mime == "application/pdf", let pdf = PDFDocument(data: data) {
+        let extracted = (0..<pdf.pageCount).compactMap { pdf.page(at: $0)?.string }.joined(separator: "\n\n")
+        if !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let limit = 100_000
+            let body = extracted.count > limit ? String(extracted.prefix(limit)) + "\n[Text truncated at 100,000 characters.]" : extracted
+            return MCPToolContent(blocks: [["type": "text", "text": metadata + "\n\nExtracted PDF text:\n" + body]])
+        }
+        let pages = (0..<min(pdf.pageCount, 8)).compactMap { index -> [String: Any]? in
+            guard let page = pdf.page(at: index), let image = page.thumbnail(of: NSSize(width: 1600, height: 1600), for: .mediaBox).cgImage(forProposedRect: nil, context: nil, hints: nil),
+                  let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return nil }
+            return ["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"]
+        }
+        guard !pages.isEmpty else { throw ToolFailure(message: "Could not extract text or render pages from this PDF") }
+        return MCPToolContent(blocks: [["type": "text", "text": metadata + "\nThis PDF has no selectable text. Showing up to the first 8 pages as images."]] + pages)
+    }
+    if let text = String(data: data, encoding: .utf8), !text.unicodeScalars.contains(where: { $0.value == 0 }) {
+        let limit = 100_000
+        let body = text.count > limit ? String(text.prefix(limit)) + "\n[Text truncated at 100,000 characters.]" : text
+        return MCPToolContent(blocks: [["type": "text", "text": metadata + "\n\n" + body]])
+    }
+
+    return MCPToolContent(blocks: [
+        ["type": "text", "text": metadata + "\nThe file is available as an embedded MCP resource."],
+        ["type": "resource", "resource": ["uri": "cothink://boards/\(board.id)/assets/\(asset.id)", "mimeType": mime, "blob": data.base64EncodedString()]]
+    ])
+}
+
+func readNoteImage(_ args: [String: Any], store: BoardStore) throws -> MCPToolContent {
+    let board = try store.get(string(args, "board_id"))
+    let noteID = try string(args, "note_id")
+    guard let note = board.notes.first(where: { $0.id == noteID }) else { throw ToolFailure(message: "Note not found: \(noteID)") }
+    guard let path = note.imagePath, !path.isEmpty else { throw ToolFailure(message: "This note has no directly attached image") }
+    let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+    let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+    guard values.isRegularFile == true, let size = values.fileSize, size <= 50 * 1024 * 1024,
+          let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType, mime.hasPrefix("image/") else {
+        throw ToolFailure(message: "The attached image is missing, unsupported, or exceeds the 50 MB MCP read limit")
+    }
+    let data = try Data(contentsOf: url)
+    return MCPToolContent(blocks: [
+        ["type": "text", "text": "Image attached to note \(noteID) on board \(board.title) (\(mime), \(size) bytes)"],
+        ["type": "image", "data": data.base64EncodedString(), "mimeType": mime]
+    ])
+}
+
 func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> Any {
-    if readOnly && !["list_boards", "get_board", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
+    if readOnly && !["list_boards", "get_board", "get_board_context", "read_project_file", "read_note_image", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
     switch name {
     case "list_boards": return try object(store.list())
     case "get_board": return try object(store.get(string(args, "board_id")))
+    case "get_board_context": return boardContext(try store.get(string(args, "board_id")))
+    case "read_project_file": return try readProjectFile(args, store: store)
+    case "read_note_image": return try readNoteImage(args, store: store)
     case "board_history": return try object(store.history(string(args, "board_id")))
     case "create_board": return try object(store.create(title: string(args, "title"), actor: actor))
     case "delete_board": try store.delete(string(args, "board_id"), expectedRevision: integer(args, "expected_revision")); return ["deleted": true]
@@ -235,6 +369,10 @@ do {
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             do {
                 let value = try call(name, arguments, store: store)
+                if let content = value as? MCPToolContent {
+                    result(id, ["content": content.blocks, "isError": false])
+                    continue
+                }
                 let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])
                 result(id, ["content": [["type": "text", "text": String(decoding: data, as: UTF8.self)]], "isError": false])
             } catch {
