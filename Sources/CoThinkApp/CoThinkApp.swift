@@ -594,7 +594,12 @@ struct WorkspaceView: View {
     }
 
     func boardCanvas(_ board: Board) -> some View {
-        ScrollView([.horizontal, .vertical]) {
+        let noteRects = board.notes.map { note in
+            let note = displayed(note)
+            return BoardRect(x: note.x, y: note.y, width: note.width, height: note.height)
+        }
+        let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0) })
+        return ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.76 : 0.68))
                     .overlay(alignment: .topLeading) {
@@ -643,7 +648,7 @@ struct WorkspaceView: View {
                 ForEach(board.groups) { group in groupView(group) }
                 ForEach(board.connections) { edge in
                     if let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
-                        ConnectionView(from: displayed(from), to: displayed(to), edge: edge, selected: model.selectedConnectionID == edge.id)
+                        ConnectionView(from: displayed(from), to: displayed(to), edge: edge, selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
                             .onTapGesture {
                                 selectConnection(edge.id)
                             }
@@ -667,7 +672,7 @@ struct WorkspaceView: View {
                     Canvas { context, _ in
                         var path = Path(); path.move(to: start); path.addLine(to: drag.point)
                         context.stroke(path, with: .color(.accentColor), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
-                    }.frame(width: 3000, height: 2000).allowsHitTesting(false)
+                    }.frame(width: extent.width, height: extent.height).allowsHitTesting(false)
                 }
                 if let note = board.notes.first(where: { $0.id == model.selectedNoteID }) {
                     resizeHandles(id: note.id, rect: BoardRect(x: note.x, y: note.y, width: note.width, height: note.height), isNote: true)
@@ -676,10 +681,10 @@ struct WorkspaceView: View {
                     resizeHandles(id: group.id, rect: BoardRect(x: group.x, y: group.y, width: group.width, height: group.height), isNote: false)
                 }
             }
-            .frame(width: 3000, height: 2000)
+            .frame(width: extent.width, height: extent.height)
             .coordinateSpace(name: "boardCanvas")
             .scaleEffect(zoom, anchor: .topLeading)
-            .frame(width: 3000 * zoom, height: 2000 * zoom, alignment: .topLeading)
+            .frame(width: extent.width * zoom, height: extent.height * zoom, alignment: .topLeading)
         }
         .focusable()
         .focused($canvasFocused)
@@ -823,10 +828,14 @@ struct WorkspaceView: View {
             })
     }
 
-    func groupView(_ group: BoardGroup) -> some View {
+    func displayedGroupRect(_ group: BoardGroup) -> BoardRect {
         let delta = draggingID == group.id ? model.board?.groupMovement(id: group.id, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) : nil
         let dx = delta?.dx ?? 0, dy = delta?.dy ?? 0
-        let rect = resizeState?.id == group.id ? resizeState!.preview : BoardRect(x: group.x + dx, y: group.y + dy, width: group.width, height: group.height)
+        return resizeState?.id == group.id ? resizeState!.preview : BoardRect(x: group.x + dx, y: group.y + dy, width: group.width, height: group.height)
+    }
+
+    func groupView(_ group: BoardGroup) -> some View {
+        let rect = displayedGroupRect(group)
         var preview = group
         preview.x = rect.x; preview.y = rect.y; preview.width = rect.width; preview.height = rect.height
         return GroupTile(
@@ -1083,6 +1092,8 @@ struct ConnectionView: View {
     let to: Note
     let edge: Connection
     let selected: Bool
+    let canvasWidth: Double
+    let canvasHeight: Double
     var body: some View {
         let start = CGPoint(x: from.x + from.width / 2, y: from.y + from.height / 2)
         let end = CGPoint(x: to.x + to.width / 2, y: to.y + to.height / 2)
@@ -1112,7 +1123,7 @@ struct ConnectionView: View {
                 }
             }
         }
-        .frame(width: 3000, height: 2000)
+        .frame(width: canvasWidth, height: canvasHeight)
         .overlay(alignment: .topLeading) {
             if let label = edge.label, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(label)

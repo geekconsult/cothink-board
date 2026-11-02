@@ -53,7 +53,7 @@ python3 scripts/test-mcp.py
 
 ## Current limitations
 
-The canvas has a fixed extent. Groups created by dragging include notes whose centers fall inside the selection. Existing groups without member IDs remain visual background shapes until you choose Lock notes inside group in the inspector. There is no multi-selection, semantic search tool, or in-app agent permission management. Sidebar search filters boards by board title or note text but does not highlight matching notes. The MCP process can be configured read-only but the app does not authenticate local processes. Undo and redo operate on the board's shared history, not separate per-user histories. Change attribution is available in the inspector and through `board_history`. The app has not been notarized or packaged as a signed distribution.
+The canvas grows to the right and down as notes or groups move or resize near its edge. Its origin remains at the top left. Groups created by dragging include notes whose centers fall inside the selection. Existing groups without member IDs remain visual background shapes until you choose Lock notes inside group in the inspector. There is no semantic search tool or in-app agent permission management. Sidebar search filters boards by board title, tags or note text but does not highlight matching notes. The MCP process can be configured read-only but the app does not authenticate local processes. Undo and redo operate on the board's shared history, not separate per-user histories. Change attribution is available in the inspector and through `board_history`. The app has not been notarized or packaged as a signed distribution.
 
 ## Keyboard shortcuts
 

@@ -18,6 +18,14 @@ public struct BoardRect: Equatable {
     public init(x: Double, y: Double, width: Double, height: Double) {
         self.x = x; self.y = y; self.width = width; self.height = height
     }
+    public static func canvasExtent(containing rects: [BoardRect]) -> (width: Double, height: Double) {
+        let right = rects.map { $0.x + $0.width }.max() ?? 0
+        let bottom = rects.map { $0.y + $0.height }.max() ?? 0
+        func extent(_ edge: Double, minimum: Double) -> Double {
+            max(minimum, ceil((edge + 500) / 500) * 500)
+        }
+        return (extent(right, minimum: 3000), extent(bottom, minimum: 2000))
+    }
     public static func selection(fromX: Double, fromY: Double, toX: Double, toY: Double) -> BoardRect {
         BoardRect(x: min(fromX, toX), y: min(fromY, toY), width: abs(toX - fromX), height: abs(toY - fromY))
     }

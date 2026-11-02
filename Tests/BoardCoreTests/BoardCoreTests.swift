@@ -2,6 +2,14 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testCanvasExtentExpandsForObjectBounds() {
+        let empty = BoardRect.canvasExtent(containing: [])
+        XCTAssertEqual(empty.width, 3000); XCTAssertEqual(empty.height, 2000)
+        let far = BoardRect.canvasExtent(containing: [BoardRect(x: 2900, y: 1900, width: 400, height: 300)])
+        XCTAssertEqual(far.width, 4000); XCTAssertEqual(far.height, 3000)
+        let resized = BoardRect.canvasExtent(containing: [BoardRect(x: 100, y: 100, width: 4500, height: 100)])
+        XCTAssertEqual(resized.width, 5500); XCTAssertEqual(resized.height, 2000)
+    }
     func testBoardListPersistenceConflictsAndBoardRemoval() throws {
         let store = try store()
         let board = try store.create(title: "Project", actor: "user")
