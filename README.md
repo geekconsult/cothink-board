@@ -25,11 +25,23 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 - **Portable board data:** export a board as JSON and import it later. Project file contents and list membership are stored separately; see [Data and backups](#data-and-backups).
 - **PDF reports:** preview and export a board using one of three HTML-based templates, with an overview, full note text, relationships, and supported attached images.
 
+## Install from source
+
+Run `./scripts/install-app.sh` to build and install CoThink Board into `~/Applications`. The installer asks whether to set up Pi for agent chat. Pi is optional and installs into `~/.local/share/cothink/pi`, without replacing your existing Pi installation. Node.js 20.6 or newer and npm are required; install them from [nodejs.org](https://nodejs.org/) first. The setup pins Pi 0.73.1, the version checked with CoThink.
+
+If you downloaded the app, open Agent chat and choose **Set Up Pi** when prompted. You can also open chat settings and select **Set Up Pi…** later. A Terminal window installs Pi and offers to open it for provider setup. Return to chat settings, select **Check Again**, then **Connect**. If Node.js is missing, install it and run setup again. You may instead select an existing Pi executable with **Choose…**.
+
+### Sign in to a model provider
+
+In the Pi Terminal session, type `/login` and select a provider. For **ChatGPT Plus/Pro**, choose **OpenAI Codex** and complete the browser sign-in. For **Z.ai / Zhipu**, choose **ZAI** and enter your Z.ai API key when prompted; use the key appropriate for your account and plan. Other providers can be selected from the same menu. Then use `/model` to choose a model and exit Pi with `/exit` or Ctrl+D. Return to CoThink and connect. Pi stores its credentials in `~/.pi/agent/auth.json`; do not share that file. Provider availability and account requirements are described in [Pi provider documentation](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/providers.md).
+
+If you skipped the login prompt, launch the installed Pi in Terminal with `~/.local/share/cothink/pi/bin/cothink-pi` and follow the same steps. If the configured Node.js is removed or moved, rerun **Set Up Pi…** to refresh the launcher. Requests are sent to the provider selected in Pi and may incur provider charges.
+
 ## Agent chat with Pi
 
 Open the chat panel with the speech-bubble button in the toolbar. Use the gear menu to set the Pi executable and chat text size. Chat messages render Markdown. Choose the installed `pi` executable or enter its absolute path, then connect. CoThink starts Pi in RPC mode with its existing model and credentials. It exposes the complete CoThink MCP tool catalog, including board, list, file, history, and export operations. Tools with a `board_id` argument are bound to the selected board. Other MCP tools retain their normal arguments. A request may be sent to the model provider configured in Pi.
 
-Each board uses its own local Pi conversation in the CoThink data directory. Switching boards or hiding the panel stops the Pi subprocess; reopening resumes the saved conversation. CoThink does not modify Pi's configuration. It disables Pi's built-in tools, automatic extensions, skills and context files for this session, and loads only its bundled CoThink bridge. Some board tools can read project files or write exports when requested. The Stop button sends an abort request; an already-started board operation may still complete.
+Each board uses its own local Pi conversation in the CoThink data directory. Switching boards or hiding the panel stops the Pi subprocess; reopening resumes the saved conversation. CoThink does not modify Pi's configuration. It disables Pi's built-in tools, automatic extensions, skills and context files for this session, and loads only its bundled CoThink bridge. Some board tools can read project files or write exports when requested. The chat shows when Pi is thinking, writing, or running a tool. Failed tools include the MCP error details in the transcript, and Pi's own response errors appear there too. Thinking status is shown without exposing private reasoning text. The Stop button sends an abort request; an already-started board operation may still complete.
 
 Pi must support RPC mode and extension tools. The integration was checked with Pi 0.73.1. Configure an available model and credentials in Pi before connecting. If Pi is installed outside a standard bin directory, use Choose or paste its absolute path in chat settings. Chat is not available when Pi, its model, or the bundled MCP server cannot start.
 

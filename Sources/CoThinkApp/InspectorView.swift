@@ -75,25 +75,55 @@ struct InspectorView: View {
     }
 
     private var panel: some View {
-        ScrollView { panelStack }
-            .background(.regularMaterial)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: inspectorSymbol)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .frame(width: 30, height: 30)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(inspectorTitle).font(.headline)
+                    Text("Properties").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                if hasObjectSelection {
+                    Button(role: .destructive, action: model.deleteSelection) { Image(systemName: "trash").frame(width: 20, height: 20) }
+                        .buttonStyle(.plain).modifier(GlassControl())
+                        .help("Delete selection").accessibilityLabel("Delete selection")
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .background(.thinMaterial)
+            Divider().opacity(0.5)
+            ScrollView { panelStack }
+            Divider().opacity(0.5)
+            HStack(spacing: 7) {
+                Circle().fill(saveStatus == "Saved" ? Color.green : (saveStatus == "Saving…" ? Color.orange : Color.red))
+                    .frame(width: 6, height: 6).accessibilityHidden(true)
+                Text(saveStatus).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Reload", action: loadSelection).font(.caption)
+                    .buttonStyle(.plain).modifier(GlassControl())
+                    .help("Reload the selected item's saved properties")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(.thinMaterial)
+        }
+        .background(.thinMaterial)
     }
 
     private var panelStack: some View {
         VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text(inspectorTitle)
-                        .font(.headline)
-                    Spacer()
-                    if hasObjectSelection {
-                        Button(role: .destructive, action: model.deleteSelection) { Image(systemName: "trash") }.help("Delete selection")
-                    }
-                }
-                Divider()
-                selectionProperties
-                HStack { Text(saveStatus).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Reload", action: loadSelection).font(.caption) }
-                Spacer(minLength: 0)
-        }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+            selectionProperties
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var inspectorSymbol: String {
+        if note != nil { return "note.text" }
+        if group != nil { return "square.dashed" }
+        if connection != nil { return "arrow.up.right" }
+        return "square.grid.2x2"
     }
 
     private var inspectorTitle: String {
@@ -125,7 +155,10 @@ struct InspectorView: View {
     private func noteProperties(_ note: Note) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("IDEA").font(.caption.bold()).foregroundStyle(.secondary)
-            TextEditor(text: $text).font(.body).frame(minHeight: 100).overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
+            TextEditor(text: $text).font(.body).frame(minHeight: 100)
+                .scrollContentBackground(.hidden).padding(6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.1)))
             imageAttachmentControls
             projectAttachmentControls
             if let group = board.groupContaining(noteID: note.id) {

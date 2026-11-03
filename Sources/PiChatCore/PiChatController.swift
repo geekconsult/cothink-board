@@ -32,6 +32,7 @@ public final class PiChatController: ObservableObject {
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var modelName = ""
     @Published public private(set) var bridgeReady = false
+    @Published public private(set) var activityText = ""
     private var process: Process?
     private var sessionLease: SessionLease?
     private var input: FileHandle?
@@ -62,7 +63,7 @@ public final class PiChatController: ObservableObject {
             return
         }
         previousLease?.release()
-        messages = []; modelName = ""; bridgeReady = false; readyPi = false; historyRequested = false
+        messages = []; modelName = ""; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false
         guard FileManager.default.isExecutableFile(atPath: piPath) else { phase = .failed("Choose an executable Pi binary in chat settings."); return }
         guard FileManager.default.fileExists(atPath: extensionPath), FileManager.default.isExecutableFile(atPath: mcpPath) else { phase = .failed("CoThink's bundled Pi bridge or MCP server is missing. Rebuild the app."); return }
         let encodedID = Data(boardID.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "=", with: "")
@@ -116,7 +117,7 @@ public final class PiChatController: ObservableObject {
     public func send(_ message: String) {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard phase == .ready, !text.isEmpty else { return }
-        messages.append(ChatMessage(role: .user, text: text)); assistantID = nil; phase = .running
+        messages.append(ChatMessage(role: .user, text: text)); assistantID = nil; activityText = "Starting…"; phase = .running
         sendCommand(["id": UUID().uuidString, "type": "prompt", "message": text])
     }
     public func cancel() { guard phase == .running else { return }; sendCommand(["type": "abort"]) }
@@ -128,7 +129,7 @@ public final class PiChatController: ObservableObject {
         if let process, process.isRunning { process.terminate() }
         else { sessionLease?.release() }
         process = nil; sessionLease = nil; input = nil; stdout = nil; stderr = nil
-        phase = .stopped; bridgeReady = false; readyPi = false
+        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false
     }
     private func fail(_ message: String) {
         stop(); phase = .failed(message)
@@ -202,23 +203,64 @@ public final class PiChatController: ObservableObject {
             }
         case "message_start":
             if let message = event["message"] as? [String: Any], (message["role"] as? String) == "assistant" { assistantID = nil }
+        case "agent_start":
+            if phase == .running { setActivity("Thinking…", record: true) }
         case "message_update":
-            if let delta = event["assistantMessageEvent"] as? [String: Any], (delta["type"] as? String) == "text_delta", let text = delta["delta"] as? String {
-                if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) { messages[index].text += text }
-                else { let message = ChatMessage(role: .assistant, text: text); assistantID = message.id; messages.append(message) }
+            if let delta = event["assistantMessageEvent"] as? [String: Any] {
+                switch delta["type"] as? String {
+                case "thinking_start", "thinking_delta":
+                    if phase == .running { setActivity("Thinking…", record: true) }
+                case "text_delta":
+                    guard let text = delta["delta"] as? String else { return }
+                    activityText = "Writing response…"
+                    if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) { messages[index].text += text }
+                    else { let message = ChatMessage(role: .assistant, text: text); assistantID = message.id; messages.append(message) }
+                case "error":
+                    if let reason = delta["reason"] as? String { reportFailure("Pi response failed (\(reason)).") }
+                default: break
+                }
             }
         case "message_end":
-            if let message = event["message"] as? [String: Any], let reason = message["stopReason"] as? String, reason == "error", let error = message["errorMessage"] as? String { messages.append(ChatMessage(role: .error, text: error)) }
+            if let message = event["message"] as? [String: Any], let reason = message["stopReason"] as? String, reason == "error", let error = message["errorMessage"] as? String { reportFailure(error) }
         case "tool_execution_start":
             assistantID = nil
-            messages.append(ChatMessage(role: .activity, text: "Using \(event["toolName"] as? String ?? "board tool")…"))
+            let name = event["toolName"] as? String ?? "board tool"
+            setActivity("Using \(name)…", record: true)
+        case "tool_execution_update":
+            let name = event["toolName"] as? String ?? "board tool"
+            let progress = textContent(event["partialResult"], limit: 240)
+            activityText = progress.isEmpty ? "Using \(name)…" : "Using \(name)… \(progress)"
         case "tool_execution_end":
-            if event["isError"] as? Bool == true { messages.append(ChatMessage(role: .error, text: "Board tool failed. See Pi's response for details.")) }
+            let name = event["toolName"] as? String ?? "board tool"
+            if event["isError"] as? Bool == true {
+                let detail = textContent(event["result"], limit: 1200)
+                reportFailure(detail.isEmpty ? "\(name) failed. Pi may provide more details." : "\(name) failed. \(detail)")
+            } else if phase == .running { activityText = "Thinking…" }
         case "extension_error":
-            messages.append(ChatMessage(role: .error, text: event["error"] as? String ?? "Pi extension error."))
-        case "agent_end": if phase == .running { phase = .ready; assistantID = nil }
+            reportFailure(event["error"] as? String ?? "Pi extension error.")
+        case "auto_retry_start":
+            setActivity("Retrying with Pi…", record: true)
+        case "auto_retry_end":
+            if phase == .running { setActivity("Thinking…", record: true) }
+        case "agent_end": if phase == .running { phase = .ready; activityText = ""; assistantID = nil }
         default: break
         }
+    }
+    private func setActivity(_ text: String, record: Bool = false) {
+        activityText = text
+        if record && (messages.last?.role != .activity || messages.last?.text != text) {
+            messages.append(ChatMessage(role: .activity, text: text))
+        }
+    }
+    private func reportFailure(_ text: String) {
+        activityText = "Pi reported an error"
+        messages.append(ChatMessage(role: .error, text: text))
+    }
+    private func textContent(_ value: Any?, limit: Int) -> String {
+        guard let object = value as? [String: Any], let parts = object["content"] as? [[String: Any]] else { return "" }
+        let text = parts.filter { ($0["type"] as? String) == "text" }.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count > limit else { return text }
+        return String(text.prefix(limit)) + "…"
     }
     private func terminated(runID: UUID, status: Int32) {
         guard generation == runID else { return }

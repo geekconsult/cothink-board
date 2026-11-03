@@ -82,8 +82,7 @@ struct BoardMinimap: View {
             }
         }
         .frame(width: expanded ? mapWidth : 18)
-        .padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.12)))
+        .padding(10).modifier(GlassFloatingSurface())
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
 }

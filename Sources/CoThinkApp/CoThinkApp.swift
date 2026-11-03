@@ -464,14 +464,27 @@ struct WorkspaceView: View {
 
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                MascotLogo().frame(width: 42, height: 42)
+            HStack(spacing: 10) {
+                MascotLogo().frame(width: 38, height: 38)
                 Spacer()
-                Button { editingListID = nil; showingListManager = true } label: { Image(systemName: "folder.badge.gearshape") }.help("Create, rename, or delete lists")
-                Button(action: model.createBoard) { Image(systemName: "plus") }.help("New board")
-            }.padding(18)
-            TextField("Search boards and notes", text: $search)
-                .textFieldStyle(.roundedBorder).padding(.horizontal, 14).padding(.bottom, 8)
+                Button { editingListID = nil; showingListManager = true } label: { Image(systemName: "folder.badge.gearshape").frame(width: 20, height: 20) }
+                    .buttonStyle(.plain).modifier(GlassControl()).help("Create, rename, or delete lists").accessibilityLabel("Manage lists")
+                Button(action: model.createBoard) { Image(systemName: "plus").frame(width: 20, height: 20) }
+                    .buttonStyle(.plain).modifier(GlassControl()).help("New board").accessibilityLabel("New board")
+            }.padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 12)
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search boards and notes", text: $search)
+                    .textFieldStyle(.plain).accessibilityLabel("Search boards and notes")
+                if !search.isEmpty {
+                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain).help("Clear search").accessibilityLabel("Clear search")
+                }
+            }
+            .font(.callout).padding(.horizontal, 10).padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.primary.opacity(0.08)))
+            .padding(.horizontal, 12).padding(.bottom, 8)
             List(selection: Binding(get: { model.board?.id }, set: { if let id = $0 { model.selectBoard(id) } })) {
                 ForEach(model.boardLists) { list in
                     Section {
@@ -500,24 +513,27 @@ struct WorkspaceView: View {
                 }
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden)
-            Divider()
-            HStack {
+            HStack(spacing: 9) {
                 Button("Import", systemImage: "square.and.arrow.down", action: model.importBoard)
+                    .buttonStyle(.plain).modifier(GlassControl()).help("Import board")
                 Spacer()
                 Button {
                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
                     if !model.draftBlocked { showingBoardSettings = true }
-                } label: { Image(systemName: "slider.horizontal.3") }.disabled(model.board == nil).help("Board settings")
-                Button { showingDeleteBoard = true } label: { Image(systemName: "trash") }.disabled(model.board == nil).help("Delete board")
-            }.padding(14)
-        }.background(.regularMaterial)
+                } label: { Image(systemName: "slider.horizontal.3") }
+                    .buttonStyle(.plain).modifier(GlassControl()).disabled(model.board == nil).help("Board settings").accessibilityLabel("Board settings")
+                Button { showingDeleteBoard = true } label: { Image(systemName: "trash") }
+                    .buttonStyle(.plain).modifier(GlassControl()).disabled(model.board == nil).help("Delete board").accessibilityLabel("Delete board")
+            }.padding(.horizontal, 12).padding(.vertical, 12)
+        }.background(.thinMaterial)
     }
 
     func boardSidebarLabel(_ board: Board) -> some View {
-        HStack {
-            Label(board.title, systemImage: "square.grid.2x2")
-            if board.flagged == true { Image(systemName: "flag.fill").font(.caption) }
-        }.foregroundStyle(Color(hex: board.color ?? "#7A8BA8"))
+        HStack(spacing: 8) {
+            Image(systemName: "square.grid.2x2").foregroundStyle(Color(hex: board.color ?? "#7A8BA8"))
+            Text(board.title).lineLimit(1)
+            if board.flagged == true { Image(systemName: "flag.fill").font(.caption).foregroundStyle(.secondary) }
+        }
     }
 
     func toggleSidebar() {
@@ -626,10 +642,6 @@ struct WorkspaceView: View {
                 .disabled(board == nil)
             Button(action: openWallpaper) { Image(systemName: "photo.on.rectangle.angled") }
                 .help("Change board wallpaper").accessibilityLabel("Board wallpaper").disabled(board == nil)
-            Button { showAgentChat.toggle() } label: { Image(systemName: "bubble.left.and.text.bubble.right") }
-                .help(showAgentChat ? "Hide agent chat" : "Show agent chat")
-                .accessibilityLabel(showAgentChat ? "Hide agent chat" : "Show agent chat")
-                .disabled(board == nil)
             Button("MCP", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
                 .help("Connect an AI agent")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
@@ -647,11 +659,20 @@ struct WorkspaceView: View {
             .accessibilityLabel(showInspector ? "Hide inspector" : "Show inspector")
             .accessibilityValue(showInspector ? "Visible" : "Hidden")
             .keyboardShortcut("2", modifiers: [.command, .option])
+            Button { showAgentChat.toggle() } label: {
+                MascotLogo().frame(width: 27, height: 27).padding(3)
+                    .background(showAgentChat ? Color.accentColor.opacity(0.16) : Color.clear, in: Circle())
+                    .accessibilityHidden(true)
+            }
+            .help(showAgentChat ? "Hide agent chat" : "Show agent chat")
+            .accessibilityLabel(showAgentChat ? "Hide agent chat" : "Show agent chat")
+            .accessibilityValue(showAgentChat ? "Visible" : "Hidden")
+            .disabled(board == nil)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        .background(.regularMaterial)
+        .background(.thinMaterial)
         .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 1) }
     }
 
@@ -1077,10 +1098,21 @@ struct MascotLogo: View {
 struct GlassControl: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.padding(4).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
+            content.padding(.horizontal, 6).padding(.vertical, 4).glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         } else {
-            content.padding(4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.08)))
+            content.padding(.horizontal, 6).padding(.vertical, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.08)))
+        }
+    }
+}
+
+struct GlassFloatingSurface: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.primary.opacity(0.1)))
         }
     }
 }

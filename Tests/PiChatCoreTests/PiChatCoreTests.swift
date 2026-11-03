@@ -112,4 +112,49 @@ done
         XCTAssertEqual(second.phase, .ready)
         second.stop(); controller.stop()
     }
+    @MainActor
+    func testThinkingAndToolFailureDetailsReachTheChatTranscript() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pi = dir.appendingPathComponent("pi"), ext = dir.appendingPathComponent("extension.ts")
+        let script = #"""
+#!/bin/bash
+printf 'COTHINK_MCP_READY\n' >&2
+while IFS= read -r line; do
+  if [[ "$line" == *'get_state'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_state","success":true,"data":{}}'
+  elif [[ "$line" == *'get_messages'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[]}}'
+  elif [[ "$line" == *'prompt'* ]]; then
+    printf '%s\n' '{"type":"response","command":"prompt","success":true}' '{"type":"agent_start"}' '{"type":"message_update","assistantMessageEvent":{"type":"thinking_start"}}' '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"private reasoning must not be displayed"}}'
+    sleep 0.3
+    printf '%s\n' '{"type":"tool_execution_start","toolName":"cothink_edit_board"}'
+    sleep 0.3
+    printf '%s\n' '{"type":"tool_execution_end","toolName":"cothink_edit_board","isError":true,"result":{"content":[{"type":"text","text":"Revision conflict. Read the board again before editing."}]}}' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"I could not update the board."}}' '{"type":"agent_end"}'
+  fi
+done
+"""#
+        try script.write(to: pi, atomically: true, encoding: .utf8)
+        try "#!/bin/bash\n".write(to: ext, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pi.path)
+        let controller = PiChatController()
+        controller.start(boardID: "board-a", piPath: pi.path, extensionPath: ext.path, mcpPath: pi.path, home: dir)
+        for _ in 0..<100 where controller.phase != .ready { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .ready)
+        controller.send("Update this board")
+        for _ in 0..<100 where controller.activityText != "Thinking…" { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .running)
+        XCTAssertEqual(controller.activityText, "Thinking…")
+        for _ in 0..<100 where controller.activityText != "Using cothink_edit_board…" { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .running)
+        XCTAssertEqual(controller.activityText, "Using cothink_edit_board…")
+        for _ in 0..<100 where controller.phase != .ready { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertTrue(controller.messages.contains { $0.role == .activity && $0.text.localizedCaseInsensitiveContains("thinking") })
+        XCTAssertTrue(controller.messages.contains { $0.role == .error && $0.text.contains("Revision conflict. Read the board again before editing.") })
+        XCTAssertFalse(controller.messages.contains { $0.text.contains("private reasoning") })
+        controller.stop()
+    }
+
 }

@@ -56,7 +56,7 @@ struct ProjectFilesView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
-        .background(.regularMaterial)
+        .background(.thinMaterial)
         .alert("Project Files", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
