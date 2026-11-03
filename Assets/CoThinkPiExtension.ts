@@ -1,11 +1,5 @@
 import { spawn } from "node:child_process";
 
-const boardTools = new Set([
-  "get_board", "get_board_context", "capture_board", "read_project_file", "read_note_image",
-  "board_history", "set_board_metadata", "set_board_wallpaper", "edit_board", "add_project_file",
-  "export_board_pdf", "unlock_note", "lock_note", "undo", "redo",
-]);
-
 export default async function (pi: any) {
   const boardID = process.env.COTHINK_PI_BOARD_ID;
   const command = process.env.COTHINK_MCP_PATH;
@@ -74,19 +68,20 @@ export default async function (pi: any) {
     if (!Array.isArray(listing?.tools)) throw new Error("CoThink MCP did not provide its tools");
     const registered = new Set<string>();
     for (const tool of listing.tools) {
-      if (!boardTools.has(tool.name)) continue;
-      const properties = { ...tool.inputSchema.properties };
-      delete properties.board_id;
-      const required = (tool.inputSchema.required || []).filter((name: string) => name !== "board_id");
+      const properties = { ...(tool.inputSchema?.properties || {}) };
+      const isBoardScoped = Object.hasOwn(properties, "board_id");
+      if (isBoardScoped) delete properties.board_id;
+      const required = (tool.inputSchema?.required || []).filter((name: string) => !isBoardScoped || name !== "board_id");
       registered.add(tool.name);
       pi.registerTool({
         name: `cothink_${tool.name}`,
         label: `CoThink ${tool.name}`,
-        description: `${tool.description} This tool operates on the board currently open in CoThink.`,
+        description: isBoardScoped ? `${tool.description} This tool operates on the board currently open in CoThink.` : tool.description,
         parameters: { ...tool.inputSchema, properties, required },
         async execute(_id: string, args: Record<string, unknown>, signal: AbortSignal) {
           if (signal.aborted) throw new Error("Cancelled");
-          const result = await request("tools/call", { name: tool.name, arguments: { ...args, board_id: boardID } }, 120_000, signal);
+          const arguments_ = isBoardScoped ? { ...args, board_id: boardID } : args;
+          const result = await request("tools/call", { name: tool.name, arguments: arguments_ }, 120_000, signal);
           if (signal.aborted) throw new Error("Cancelled");
           const content = (result?.content || []).map((part: any) => {
             if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") return { type: "image", data: part.data, mimeType: part.mimeType };

@@ -7,6 +7,7 @@ struct PiChatView: View {
     let board: Board
     @StateObject private var chat = PiChatController()
     @AppStorage("piExecutablePath") private var piExecutablePath = ""
+    @AppStorage("agentChatFontSize") private var chatFontSize = 14.0
     @State private var input = ""
     @State private var settingsVisible = false
     @FocusState private var inputFocused: Bool
@@ -37,25 +38,11 @@ struct PiChatView: View {
                 Button { settingsVisible.toggle() } label: { Image(systemName: "gearshape") }
                     .buttonStyle(.borderless).help("Pi settings")
                     .accessibilityLabel("Pi settings")
+                    .popover(isPresented: $settingsVisible, arrowEdge: .top) {
+                        settingsPanel.padding(16).frame(width: 340)
+                    }
             }.padding(14)
             Divider()
-            if settingsVisible || piExecutablePath.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Pi executable").font(.caption.weight(.semibold))
-                    HStack {
-                        TextField("Path to Pi executable", text: $piExecutablePath)
-                            .textFieldStyle(.roundedBorder).font(.caption)
-                        Button("Choose…", action: choosePi)
-                    }
-                    Text("Uses your existing Pi model and credentials. CoThink board tools can edit this board.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Connect") { connect() }.disabled(piExecutablePath.isEmpty || chat.phase == .starting || chat.phase == .running)
-                        if chat.phase != .stopped { Button("Disconnect") { chat.stop() } }
-                    }
-                }.padding(12)
-                Divider()
-            }
             if case .failed(let error) = chat.phase {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -76,7 +63,7 @@ struct PiChatView: View {
                         ForEach(chat.messages) { message in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(label(message.role)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                Text(message.text).font(.callout).textSelection(.enabled)
+                                markdownMessage(message.text).font(.system(size: chatFontSize)).textSelection(.enabled)
                                     .foregroundStyle(message.role == .error ? Color.red : Color.primary)
                             }
                             .padding(10).frame(maxWidth: .infinity, alignment: .leading)
@@ -108,11 +95,58 @@ struct PiChatView: View {
                 piExecutablePath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) ?? ""
             }
             if !piExecutablePath.isEmpty { connect() }
+            else { settingsVisible = true }
         }
         .onDisappear { chat.stop() }
     }
     private func label(_ role: ChatMessage.Role) -> String {
         switch role { case .user: return "You"; case .assistant: return "Pi"; case .activity: return "Activity"; case .error: return "Error" }
+    }
+    private var settingsPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Chat settings").font(.headline)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Pi executable").font(.caption.weight(.semibold))
+                HStack(spacing: 8) {
+                    TextField("Path to Pi executable", text: $piExecutablePath)
+                        .textFieldStyle(.roundedBorder).font(.caption)
+                    Button("Choose…", action: choosePi)
+                }
+                Text("Uses your Pi model and credentials. Chat tools can edit this board.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Message text size").font(.caption.weight(.semibold))
+                    Spacer()
+                    Text("\(Int(chatFontSize)) pt").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Slider(value: $chatFontSize, in: 12...22, step: 1)
+                    .accessibilityLabel("Chat message text size")
+                Text("Preview of chat text").font(.system(size: chatFontSize)).lineLimit(1)
+            }
+            HStack {
+                if chat.phase == .stopped || isFailed {
+                    Button("Connect") { connect() }
+                        .disabled(piExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else {
+                    Button("Disconnect") { chat.stop() }
+                }
+                Spacer()
+                Button("Done") { settingsVisible = false }
+            }
+        }
+    }
+    private var isFailed: Bool {
+        if case .failed = chat.phase { return true }
+        return false
+    }
+    private func markdownMessage(_ text: String) -> Text {
+        do {
+            return Text(try AttributedString(markdown: text, options: .init(interpretedSyntax: .full)))
+        } catch {
+            return Text(text)
+        }
     }
     private func choosePi() {
         let panel = NSOpenPanel()
@@ -121,10 +155,12 @@ struct PiChatView: View {
         if panel.runModal() == .OK, let url = panel.url {
             piExecutablePath = url.path
             connect()
+            settingsVisible = false
         }
     }
     private func connect() {
         chat.start(boardID: board.id, piPath: piExecutablePath, extensionPath: extensionPath, mcpPath: mcpPath, home: home)
+        if !piExecutablePath.isEmpty { settingsVisible = false }
     }
     private func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)

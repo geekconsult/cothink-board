@@ -27,7 +27,7 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 
 ## Agent chat with Pi
 
-Open the chat panel with the speech-bubble button in the toolbar. Choose the installed `pi` executable or enter its absolute path, then connect. CoThink starts Pi in RPC mode with its existing model and credentials, and gives it board-scoped MCP tools. Ask it to read the current board, arrange notes, or make changes. Pi can modify the selected board and access its registered attachments; changes appear as the app refreshes. A request may be sent to the model provider configured in Pi.
+Open the chat panel with the speech-bubble button in the toolbar. Use the gear menu to set the Pi executable and chat text size. Chat messages render Markdown. Choose the installed `pi` executable or enter its absolute path, then connect. CoThink starts Pi in RPC mode with its existing model and credentials. It exposes the complete CoThink MCP tool catalog, including board, list, file, history, and export operations. Tools with a `board_id` argument are bound to the selected board. Other MCP tools retain their normal arguments. A request may be sent to the model provider configured in Pi.
 
 Each board uses its own local Pi conversation in the CoThink data directory. Switching boards or hiding the panel stops the Pi subprocess; reopening resumes the saved conversation. CoThink does not modify Pi's configuration. It disables Pi's built-in tools, automatic extensions, skills and context files for this session, and loads only its bundled CoThink bridge. Some board tools can read project files or write exports when requested. The Stop button sends an abort request; an already-started board operation may still complete.
 

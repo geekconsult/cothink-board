@@ -10,7 +10,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   body=json.loads(self.rfile.read(int(self.headers['Content-Length'])));requests.append(body)
   self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
   if len(requests)==1:
-   names=[t['function']['name'] for t in body.get('tools',[])];assert 'cothink_edit_board' in names,names
+   names=[t['function']['name'] for t in body.get('tools',[])];assert set(names)=={'cothink_'+name for name in mcp_tool_names},(names,mcp_tool_names);assert 'cothink_edit_board' in names and 'cothink_create_board_list' in names,names
    delta={'role':'assistant','tool_calls':[{'index':0,'id':'call1','type':'function','function':{'name':'cothink_edit_board','arguments':json.dumps({'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'pi-e2e-note','text':'Created by Pi','x':100,'y':100,'width':200,'height':100,'color':'#FFF1AF'}}]})}}]};finish='tool_calls'
   else:
    delta={'role':'assistant','content':'Board inspected successfully'};finish='stop'
@@ -22,7 +22,7 @@ server=http.server.HTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=s
 with tempfile.TemporaryDirectory(prefix='cothink-pi-e2e-') as tmp:
  env={**os.environ,'PI_CODING_AGENT_DIR':tmp,'COTHINK_HOME':tmp+'/home','COTHINK_MCP_PATH':root+'/.build/debug/cothink-mcp'}
  m=subprocess.Popen([env['COTHINK_MCP_PATH']],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,env=env)
- m.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'create_board','arguments':{'title':'Isolated E2E'}}})+'\n');m.stdin.flush();board=json.loads(json.loads(m.stdout.readline())['result']['content'][0]['text']);m.stdin.close();m.wait()
+ m.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'create_board','arguments':{'title':'Isolated E2E'}}})+'\n');m.stdin.flush();board=json.loads(json.loads(m.stdout.readline())['result']['content'][0]['text']);m.stdin.write(json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/list'})+'\n');m.stdin.flush();mcp_tool_names={tool['name'] for tool in json.loads(m.stdout.readline())['result']['tools']};m.stdin.close();m.wait()
  env['COTHINK_PI_BOARD_ID']=board['id']
  json.dump({'providers':{'mock':{'baseUrl':f'http://127.0.0.1:{server.server_port}/v1','api':'openai-completions','apiKey':'testing','models':[{'id':'test','input':['text'],'contextWindow':8192,'maxTokens':1024}]}}},open(tmp+'/models.json','w'))
  command=[pi,'--mode','rpc','--no-session','--no-extensions','--no-skills','--no-prompt-templates','--no-context-files','--offline','--provider','mock','--model','test','--no-builtin-tools','--extension',root+'/Assets/CoThinkPiExtension.ts']
