@@ -461,10 +461,6 @@ struct WorkspaceView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 MascotLogo().frame(width: 42, height: 42)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("CoThink").font(.headline)
-                    Text("Your boards").font(.caption).foregroundStyle(.secondary)
-                }
                 Spacer()
                 Button { editingListID = nil; showingListManager = true } label: { Image(systemName: "folder.badge.gearshape") }.help("Create, rename, or delete lists")
                 Button(action: model.createBoard) { Image(systemName: "plus") }.help("New board")
