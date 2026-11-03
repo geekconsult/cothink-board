@@ -1,4 +1,4 @@
-import json, os, shutil, subprocess, tempfile
+import base64, json, os, shutil, struct, subprocess, tempfile
 from pathlib import Path
 
 binary = os.environ.get('COTHINK_MCP_BIN', str(Path(__file__).resolve().parent.parent / '.build/debug/cothink-mcp'))
@@ -16,6 +16,13 @@ assert 'unlock_note' in [tool['name'] for tool in req(2,'tools/list')['tools']]
 _,b=call(3,'create_board',{'title':'Smoke'})
 _,b2=call(4,'edit_board',{'board_id':b['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'a','text':'Hello','x':0,'y':0,'width':100,'height':60,'color':'#ffffff','fontSize':24}},{'action':'add','collection':'notes','item':{'id':'b','text':'World','x':200,'y':0,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'connections','item':{'id':'e','from':'a','to':'b','arrow':True,'route':'custom','routePoints':[{'x':150,'y':200}],'fontSize':18}}]})
 assert b2['revision']==1 and len(b2['connections'])==1
+capture,meta=call(150,'capture_board',{'board_id':b['id']})
+assert not capture.get('isError') and meta['revision']==1 and meta['board_id']==b['id']
+assert capture['content'][1]['type']=='image' and capture['content'][1]['mimeType']=='image/png'
+png=base64.b64decode(capture['content'][1]['data'],validate=True)
+assert png.startswith(b'\x89PNG\r\n\x1a\n') and struct.unpack('>II',png[16:24])==(meta['width'],meta['height'])
+assert meta['board_bounds']['width'] >= 300 and meta['board_bounds']['height'] >= 200
+
 _,route_context=call(105,'get_board_context',{'board_id':b['id']});assert route_context['connections'][0]['route']=='custom' and route_context['connections'][0]['routePoints'][0]['y']==200 and route_context['notes'][0]['fontSize']==24
 r,e=call(5,'edit_board',{'board_id':b['id'],'expected_revision':0,'operations':[{'action':'rename','title':'stale'}]});assert r['isError'] and 'conflict' in e.lower(),e
 _,b3=call(6,'edit_board',{'board_id':b['id'],'expected_revision':1,'operations':[{'action':'delete','collection':'notes','id':'a'}]});assert len(b3['notes'])==1 and not b3['connections']
@@ -40,6 +47,10 @@ _,lst=call(101,'update_board_list',{'list':lst,'expected_revision':0})
 _,ctx=call(102,'get_board_context',{'board_id':b['id']});assert ctx['lists'][0]['description']=='Research context'
 r,e=call(103,'update_board_list',{'list':lst,'expected_revision':0});assert r['isError'] and 'changed' in e.lower()
 _,lists=call(104,'list_board_lists',{});assert lists[0]['boardIDs']==[b['id']]
+_,far=call(152,'create_board',{'title':'Off-screen overview'})
+_,far=call(153,'edit_board',{'board_id':far['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'far','text':'Far away','x':9500,'y':6000,'width':200,'height':100,'color':'#00FF00'}}]})
+far_image,far_meta=call(154,'capture_board',{'board_id':far['id']});assert not far_image.get('isError') and far_meta['board_bounds']['width']>=9700 and far_meta['board_bounds']['height']>=6100
+r,e=call(155,'capture_board',{'board_id':'missing'});assert r['isError']
 _,extra=call(90,'create_board',{'title':'Delete check'})
 _,lockboard=call(110,'create_board',{'title':'Lock check'})
 _,lockboard=call(111,'edit_board',{'board_id':lockboard['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'n','text':'Note','x':20,'y':30,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'groups','item':{'id':'g','title':'Group','x':0,'y':0,'width':300,'height':200,'color':'#ffffff'}}]})
@@ -80,6 +91,7 @@ r,e=call(15,'set_board_wallpaper',{'board_id':wallboard['id'],'expected_revision
 if os.environ.get('COTHINK_TEST_PDF') == '1':
  r,e=call(14,'export_board_pdf',pdf_args);assert r['isError'] and 'read-only' in e
 _,b=call(11,'get_board',{'board_id':b['id']});assert len(b['notes'])==1
+capture,meta=call(151,'capture_board',{'board_id':b['id']});assert not capture.get('isError') and meta['revision']==b['revision'] and capture['content'][1]['type']=='image'
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0
 temporary_home.cleanup()
 print('PASS initialize, list, create, atomic edit, conflicts, cascade, undo, redo, delete, history, import, replace, readonly, persistence')

@@ -141,7 +141,7 @@ For example, to label and route an existing connection, an MCP client can call `
 
 | Task | Tools |
 | --- | --- |
-| Find and understand boards | `list_boards`, `get_board`, `get_board_context`, `board_history` |
+| Find and understand boards | `list_boards`, `get_board`, `get_board_context`, `capture_board`, `board_history` |
 | Create and edit boards | `create_board`, `edit_board`, `replace_board`, `import_board`, `delete_board` |
 | Organize lists | `list_board_lists`, `create_board_list`, `update_board_list`, `delete_board_list`, `set_board_metadata` |
 | Work with files and PDF | `add_project_file`, `read_project_file`, `read_note_image`, `export_board_pdf` |
@@ -208,3 +208,9 @@ The canvas grows right and down from its top-left origin. Sidebar search matches
 - Shift-click notes to add or remove them from a selection; drag the selection to move it together. Dragging a locked note also moves its group and other locked members. Drag on empty canvas to select notes within a rectangle. Delete removes the selected notes.
 - Notes inside a group show a lock control. Unlock a note to move it independently; to lock it again, place its center inside a group and click the open lock. In overlapping groups the topmost group is used.
 - Use the overview in the lower-right corner to see the board and click or drag to pan.
+
+### Visual board overview through MCP
+
+Call `capture_board` with `board_id` to receive a PNG image and JSON metadata including the board revision, image dimensions and board-coordinate bounds. It renders the saved board independently of the open window and includes off-screen notes, groups, connection paths, arrows, labels, wallpaper, and a thumbnail for the first available image on each note. It is available in read-only mode.
+
+This is a reconstructed overview, not a pixel-identical screenshot; unsaved edits and UI controls are excluded. Note text is shortened, and large boards are scaled to fit within 2048 pixels on the longest side. Use `get_board_context` for full note text, exact positions and relationships; compare revisions before using `edit_board`. Project images are limited to 5 MB each and 20 MB total; `omitted_images` reports skipped images.

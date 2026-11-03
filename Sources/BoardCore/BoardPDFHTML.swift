@@ -108,7 +108,7 @@ public enum BoardPDFHTML {
         return first.count > 80 ? String(first.prefix(77)) + "…" : first
     }
 
-    private static func svg(board: Board, images: [String: String]) -> String {
+    public static func svg(board: Board, images: [String: String]) -> String {
         let notes = Dictionary(board.notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let points = board.connections.flatMap { edge -> [ConnectionPoint] in
             guard let a = notes[edge.from], let b = notes[edge.to] else { return [] }
@@ -143,19 +143,27 @@ public enum BoardPDFHTML {
             var d="M \(number(s.x)) \(number(s.y)) "
             if edge.effectiveRoute == .curved, let p=cp.first { d += "Q \(number(p.x)) \(number(p.y)) \(number(e.x)) \(number(e.y))" }
             else { d += cp.map { "L \(number($0.x)) \(number($0.y)) " }.joined() + "L \(number(e.x)) \(number(e.y))" }
-            let markerEnd = edge.effectiveDirection == .none ? "" : " marker-end=\"url(#arrow)\""
-            let markerStart = edge.effectiveDirection == .twoWay ? " marker-start=\"url(#arrow)\"" : ""
+            func arrowHead(_ tip: ConnectionPoint, toward: ConnectionPoint) -> String {
+                let angle = atan2(tip.y - toward.y, tip.x - toward.x), length = 10.0, wing = 5.0
+                let bx = tip.x - cos(angle) * length, by = tip.y - sin(angle) * length
+                let x1 = bx - sin(angle) * wing, y1 = by + cos(angle) * wing
+                let x2 = bx + sin(angle) * wing, y2 = by - cos(angle) * wing
+                return "<path d=\"M \(number(x1)) \(number(y1)) L \(number(tip.x)) \(number(tip.y)) L \(number(x2)) \(number(y2))\" fill=\"none\" stroke=\"\(color(edge.strokeColor, fallback: "#737d8e"))\" stroke-width=\"\(number(edge.strokeWidth ?? 1.5))\"/>"
+            }
+            let arrows = (edge.effectiveDirection == .none ? "" : arrowHead(e, toward: cp.last ?? s)) + (edge.effectiveDirection == .twoWay ? arrowHead(s, toward: cp.first ?? e) : "")
             let dash = edge.strokeStyle == .dashed ? " stroke-dasharray=\"8 5\"" : edge.strokeStyle == .dotted ? " stroke-dasharray=\"1 4\"" : ""
             let labelPoint: ConnectionPoint
             if edge.effectiveRoute == .curved, let p=cp.first { labelPoint = ConnectionPoint(x:(s.x+2*p.x+e.x)/4,y:(s.y+2*p.y+e.y)/4) }
             else { let all=[s]+cp+[e]; let i=(all.count-1)/2; labelPoint=ConnectionPoint(x:(all[i].x+all[i+1].x)/2,y:(all[i].y+all[i+1].y)/2) }
-            let label = edge.label.map { "<text x=\"\(number(labelPoint.x))\" y=\"\(number(labelPoint.y-5))\" text-anchor=\"middle\" font-size=\"\(number(edge.fontSize ?? 11))\" fill=\"#39414d\" paint-order=\"stroke\" stroke=\"white\" stroke-width=\"4\" stroke-linejoin=\"round\">\(escape(short($0)))</text>" } ?? ""
-            return "<path d=\"\(d)\" fill=\"none\" stroke=\"\(color(edge.strokeColor, fallback: "#737d8e"))\" stroke-width=\"\(number(edge.strokeWidth ?? 1.5))\"\(dash)\(markerStart)\(markerEnd)/>\(label)"
+            let label = edge.label.map { "<text x=\"\(number(labelPoint.x))\" y=\"\(number(labelPoint.y-5))\" text-anchor=\"middle\" font-size=\"\(number(edge.fontSize ?? 11))\" fill=\"#39414d\">\(escape(short($0)))</text>" } ?? ""
+            return "<path d=\"\(d)\" fill=\"none\" stroke=\"\(color(edge.strokeColor, fallback: "#737d8e"))\" stroke-width=\"\(number(edge.strokeWidth ?? 1.5))\"\(dash)/>\(arrows)\(label)"
         }.joined()
         let cards = board.notes.enumerated().map { index, n in
             let text = escape(String(short(n.text).prefix(40)))
             let fill = color(n.color, fallback: "#FFF1B8")
-            return "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath><rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"9\" fill=\"\(fill)\" stroke=\"\(color(n.strokeColor, fallback: "#939aa4"))\"/><text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(min(n.fontSize ?? 15, 22)))\" font-weight=\"600\">\(text)</text>"
+            let imageSource = (["legacy:\(n.id)"] + (n.assetIDs ?? [])).compactMap { images[$0] }.first { $0.hasPrefix("data:image/") }
+            let image = imageSource.map { "<image href=\"\(escape($0))\" x=\"\(number(n.x+10))\" y=\"\(number(n.y+n.height*0.45))\" width=\"\(number(max(0,n.width-20)))\" height=\"\(number(max(0,n.height*0.45)))\" preserveAspectRatio=\"xMidYMid meet\"/>" } ?? ""
+            return "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath><rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"9\" fill=\"\(fill)\" stroke=\"\(color(n.strokeColor, fallback: "#939aa4"))\"/><text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(min(n.fontSize ?? 15, 22)))\" font-weight=\"600\">\(text)</text>\(image)"
         }.joined()
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(edges)\(cards)</g></svg>"
     }

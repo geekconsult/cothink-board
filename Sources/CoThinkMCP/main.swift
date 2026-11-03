@@ -47,6 +47,7 @@ let tools: [[String: Any]] = [
     tool("set_board_wallpaper", "Set board wallpaper color (#RRGGBB), project image asset ID, or image opacity (0 to 1). Omit fields to keep them; use null to reset a field. Use add_project_file first to import an image. Changes are undoable.", ["board_id": stringSchema, "expected_revision": integerSchema, "color": ["type": ["string", "null"]], "asset_id": ["type": ["string", "null"]], "opacity": ["type": ["number", "null"], "minimum": 0, "maximum": 1]], ["board_id", "expected_revision"]),
     tool("list_boards", "List available boards with their current contents and revisions.", [:]),
     tool("get_board", "Read a complete board, including its project folder, assets attached to notes, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
+    tool("capture_board", "Return a PNG visual overview of the entire saved board and its revision, including off-screen notes, groups and connections. This is a reconstructed view, independent of the app window; use get_board_context for full text and coordinates.", ["board_id": stringSchema], ["board_id"]),
     tool("get_board_context", "Read a graph-oriented overview of every note, group, connection, label, direction, path, attachment, and spatial position on a board.", ["board_id": stringSchema], ["board_id"]),
     tool("read_project_file", "Read an attached project file by asset ID. Returns extracted text for PDFs and text files, image content for pictures, or the original resource for other file types. The asset must belong to the board's project library.", ["board_id": stringSchema, "asset_id": stringSchema], ["board_id", "asset_id"]),
     tool("read_note_image", "Read the image attached directly to a note using the legacy image attachment field. Returns the image to the agent.", ["board_id": stringSchema, "note_id": stringSchema], ["board_id", "note_id"]),
@@ -360,7 +361,7 @@ func readNoteImage(_ args: [String: Any], store: BoardStore) throws -> MCPToolCo
 }
 
 func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> Any {
-    if readOnly && !["list_boards", "list_board_lists", "get_board", "get_board_context", "read_project_file", "read_note_image", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
+    if readOnly && !["list_boards", "list_board_lists", "get_board", "get_board_context", "capture_board", "read_project_file", "read_note_image", "board_history"].contains(name) { throw ToolFailure(message: "This MCP server is configured read-only") }
     switch name {
     case "list_board_lists": return try object(store.lists())
     case "create_board_list": return try object(store.createList(title: string(args, "title")))
@@ -401,6 +402,7 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         return try object(store.replace(board, expectedRevision: revision, actor: actor))
     case "list_boards": return try object(store.list())
     case "get_board": return try object(store.get(string(args, "board_id")))
+    case "capture_board": return try captureBoard(store.get(string(args, "board_id")), store: store)
     case "get_board_context":
         let board = try store.get(string(args, "board_id"))
         var context = boardContext(board)
