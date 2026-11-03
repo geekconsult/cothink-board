@@ -22,6 +22,7 @@ struct CoThinkApp: App {
                 Button("Group Selection or Draw Group") { NotificationCenter.default.post(name: .createGroupCommand, object: nil) }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(model.board == nil)
                 Button("Connect Selected Note") { model.beginConnection() }.keyboardShortcut("l", modifiers: .command).disabled(model.selectedNoteID == nil)
                 Button("Delete Selection") { model.deleteSelection() }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection)
+                Button("Change Wallpaper…") { NotificationCenter.default.post(name: .wallpaperCommand, object: nil) }.disabled(model.board == nil)
                 Divider()
                 Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil)
                 Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil)
@@ -363,6 +364,7 @@ struct WorkspaceView: View {
     @State private var showingDeleteBoard = false
     @State private var showingMCP = false
     @State private var showingProjectFiles = false
+    @State private var wallpaperBoard: Board?
     @State private var pdfExportBoard: Board?
     @State private var showingListManager = false
     @State private var editingListID: String?
@@ -370,6 +372,9 @@ struct WorkspaceView: View {
     @State private var showingDeleteList = false
     @State private var showingBoardSettings = false
     @State private var draggingID: String?
+    @State private var draggingSelection = false
+    @State private var viewport = CGRect.zero
+    @State private var scrollRequest: CGPoint?
     @State private var dragTranslation: CGSize = .zero
     @State private var resizeState: ResizeState?
     @State private var selectionStart: CGPoint?
@@ -414,6 +419,7 @@ struct WorkspaceView: View {
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
         .onReceive(NotificationCenter.default.publisher(for: .showProjectFiles)) { _ in openProjectFiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .wallpaperCommand)) { _ in openWallpaper() }
         .onReceive(NotificationCenter.default.publisher(for: .exportPDFCommand)) { _ in openPDFExport() }
         .onReceive(NotificationCenter.default.publisher(for: .zoomInCommand)) { _ in zoomStep(1) }
         .onReceive(NotificationCenter.default.publisher(for: .zoomOutCommand)) { _ in zoomStep(-1) }
@@ -436,6 +442,7 @@ struct WorkspaceView: View {
         }
         .sheet(isPresented: $showingListManager) { ListManagerView(model: model, initialListID: editingListID).frame(minWidth: 650, minHeight: 470) }
         .sheet(isPresented: $showingBoardSettings) { if let board = model.board { BoardSettingsView(model: model, board: board).frame(width: 450) } }
+        .sheet(item: $wallpaperBoard) { board in WallpaperSettingsView(model: model, board: board) }
         .sheet(item: $pdfExportBoard) { board in
             PDFExportView(board: board, projectFolder: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? model.defaultProjectFilesDirectory(for: board.id))
         }
@@ -535,6 +542,13 @@ struct WorkspaceView: View {
         showingProjectFiles = true
     }
 
+    func openWallpaper() {
+        finishInlineEditing()
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !model.draftBlocked else { return }
+        wallpaperBoard = model.board
+    }
+
     func openPDFExport() {
         finishInlineEditing()
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -609,6 +623,8 @@ struct WorkspaceView: View {
             Button("Files", systemImage: "folder", action: openProjectFiles)
                 .help("Manage files for this board")
                 .disabled(board == nil)
+            Button(action: openWallpaper) { Image(systemName: "photo.on.rectangle.angled") }
+                .help("Change board wallpaper").accessibilityLabel("Board wallpaper").disabled(board == nil)
             Button("MCP", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
                 .help("Connect an AI agent")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
@@ -651,18 +667,9 @@ struct WorkspaceView: View {
         let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0) } + routeRects)
         return ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
-                Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.76 : 0.68))
-                    .overlay(alignment: .topLeading) {
-                        Canvas { context, size in
-                            var dots = Path()
-                            stride(from: 20.0, through: size.width, by: 28).forEach { x in
-                                stride(from: 20.0, through: size.height, by: 28).forEach { y in
-                                    dots.addEllipse(in: CGRect(x: x, y: y, width: 2, height: 2))
-                                }
-                            }
-                            context.fill(dots, with: .color(.secondary.opacity(0.22)))
-                        }.allowsHitTesting(false)
-                    }
+                WallpaperBackgroundView(board: board,
+                                        folder: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? model.defaultProjectFilesDirectory(for: board.id),
+                                        width: extent.width, height: extent.height, colorScheme: colorScheme)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         finishInlineEditing()
@@ -735,9 +742,14 @@ struct WorkspaceView: View {
                 }
             }
             .frame(width: extent.width, height: extent.height)
+            .background(ScrollViewportObserver(viewport: $viewport, request: $scrollRequest))
             .coordinateSpace(name: "boardCanvas")
             .scaleEffect(zoom, anchor: .topLeading)
             .frame(width: extent.width * zoom, height: extent.height * zoom, alignment: .topLeading)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            BoardMinimap(board: board, extent: CGSize(width: extent.width, height: extent.height), zoom: zoom, viewport: viewport) { scrollRequest = $0 }
+                .padding(14)
         }
         .focusable()
         .focused($canvasFocused)
@@ -802,6 +814,9 @@ struct WorkspaceView: View {
         if let state = resizeState, state.id == note.id {
             let rect = state.preview
             result.x = rect.x; result.y = rect.y; result.width = rect.width; result.height = rect.height
+        } else if draggingSelection, let board = model.board {
+            let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom)
+            if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
         } else if draggingID == note.id {
             result.x = max(0, note.x + dragTranslation.width / zoom)
             result.y = max(0, note.y + dragTranslation.height / zoom)
@@ -886,12 +901,33 @@ struct WorkspaceView: View {
             text: Binding(get: { inlineText }, set: { inlineText = $0; scheduleInlineSave() }),
             onFinishEditing: finishInlineEditing
         )
+            .overlay(alignment: .topTrailing) {
+                if let group = board.groupContaining(noteID: note.id) ?? board.groups.last(where: { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height).containsCenter(of: note) }) {
+                    let locked = board.groupContaining(noteID: note.id) != nil
+                    Button { if locked { model.unlockNote(note.id) } else { model.lockNote(note.id, to: group.id) } } label: {
+                        Image(systemName: locked ? "lock.fill" : "lock.open.fill")
+                            .font(.system(size: 10, weight: .semibold)).padding(5)
+                            .background(.regularMaterial, in: Circle())
+                    }.buttonStyle(.plain).padding(5)
+                        .help(locked ? "Unlock from group" : "Lock to \(group.title)")
+                        .accessibilityLabel(locked ? "Unlock note from group" : "Lock note to \(group.title)")
+                }
+            }
             .frame(width: displayed(note).width, height: displayed(note).height)
             .position(x: displayed(note).x + displayed(note).width / 2, y: displayed(note).y + displayed(note).height / 2)
             .onTapGesture {
                 let clickedAnotherObject = model.selectedNoteID != note.id || model.selectedGroupID != nil
                 if editingObjectID != note.id { finishInlineEditing() }
-                model.chooseNote(note.id); canvasFocused = true
+                if NSEvent.modifierFlags.contains(.shift), model.connectingFrom == nil {
+                    NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                    guard !model.draftBlocked else { return }
+                    var ids = model.selectedNoteIDs
+                    if let selected = model.selectedNoteID { ids.insert(selected) }
+                    if ids.contains(note.id) { ids.remove(note.id) } else { ids.insert(note.id) }
+                    model.selectedNoteID = nil; model.selectedNoteIDs = ids
+                    model.selectedGroupID = nil; model.selectedConnectionID = nil
+                } else { model.chooseNote(note.id) }
+                canvasFocused = true
                 if clickedAnotherObject { showInspector = false }
             }
             .simultaneousGesture(TapGesture(count: 2).onEnded {
@@ -900,13 +936,18 @@ struct WorkspaceView: View {
             .gesture(DragGesture(minimumDistance: 3).onChanged { value in
                 if draggingID == nil { finishInlineEditing(); NotificationCenter.default.post(name: .flushBoardDraft, object: nil) }
                 guard !model.draftBlocked else { return }
-                if draggingID == nil { draggingID = model.board?.groupContaining(noteID: note.id)?.id ?? note.id }
+                if draggingID == nil {
+                    draggingSelection = model.selectedNoteIDs.contains(note.id)
+                    draggingID = draggingSelection ? note.id : (model.board?.groupContaining(noteID: note.id)?.id ?? note.id)
+                }
                 dragTranslation = value.translation
             }.onEnded { value in
                 guard let draggedID = draggingID else { return }
-                draggingID = nil; dragTranslation = .zero
+                let wasSelection = draggingSelection
+                draggingID = nil; draggingSelection = false; dragTranslation = .zero
                 model.mutate { board in
                     let dx = value.translation.width / zoom, dy = value.translation.height / zoom
+                    if wasSelection { board.moveSelection(noteIDs: model.selectedNoteIDs, dx: dx, dy: dy); return }
                     if draggedID != note.id { _ = board.moveGroup(id: draggedID, dx: dx, dy: dy); return }
                     guard let index = board.notes.firstIndex(where: { $0.id == note.id }) else { return }
                     board.notes[index].x = max(0, note.x + dx)
@@ -916,7 +957,8 @@ struct WorkspaceView: View {
     }
 
     func displayedGroupRect(_ group: BoardGroup) -> BoardRect {
-        let delta = draggingID == group.id ? model.board?.groupMovement(id: group.id, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) : nil
+        let selectionDelta = draggingSelection ? model.board?.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) : nil
+        let delta = selectionDelta?.groupIDs.contains(group.id) == true ? (dx: selectionDelta!.dx, dy: selectionDelta!.dy) : (draggingID == group.id ? model.board?.groupMovement(id: group.id, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) : nil)
         let dx = delta?.dx ?? 0, dy = delta?.dy ?? 0
         return resizeState?.id == group.id ? resizeState!.preview : BoardRect(x: group.x + dx, y: group.y + dy, width: group.width, height: group.height)
     }
@@ -1285,6 +1327,7 @@ extension Notification.Name {
     static let flushBoardDraft = Notification.Name("CoThinkFlushBoardDraft")
     static let createGroupCommand = Notification.Name("CoThinkCreateGroupCommand")
     static let showProjectFiles = Notification.Name("CoThinkShowProjectFiles")
+    static let wallpaperCommand = Notification.Name("CoThinkWallpaperCommand")
     static let exportPDFCommand = Notification.Name("CoThinkExportPDFCommand")
     static let zoomInCommand = Notification.Name("CoThinkZoomInCommand")
     static let zoomOutCommand = Notification.Name("CoThinkZoomOutCommand")

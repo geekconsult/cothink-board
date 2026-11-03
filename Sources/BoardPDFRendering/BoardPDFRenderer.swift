@@ -41,6 +41,15 @@ public final class BoardPDFPreview: NSObject, ObservableObject, WKNavigationDele
             image.replaceWith(message);
           }
         }));
+        await Promise.all(Array.from(document.querySelectorAll('svg image')).map(async image => {
+          const probe = new Image(); probe.src = image.getAttribute('href');
+          try { await probe.decode(); }
+          catch (_) {
+            image.remove();
+            const caption = document.querySelector('.caption');
+            if (caption) caption.append(' Wallpaper image could not be rendered.');
+          }
+        }));
         await document.fonts.ready;
         document.documentElement.getBoundingClientRect();
         await new Promise(resolve => setTimeout(resolve, 250));
@@ -167,7 +176,8 @@ public final class BoardPDFPreview: NSObject, ObservableObject, WKNavigationDele
             remaining -= size
             images[key] = "data:\(mime);base64,\(data.base64EncodedString())"
         }
-        let used = Set(board.notes.flatMap { $0.assetIDs ?? [] })
+        var used = Set(board.notes.flatMap { $0.assetIDs ?? [] })
+        if let wallpaperID = board.wallpaperAssetID { used.insert(wallpaperID) }
         for asset in board.projectAssets where used.contains(asset.id) {
             if UTType(filenameExtension: URL(fileURLWithPath: asset.relativePath).pathExtension)?.conforms(to: .image) == true { images[asset.id] = "" }
             let url = root.appendingPathComponent(asset.relativePath).standardizedFileURL.resolvingSymlinksInPath()

@@ -71,6 +71,7 @@ public enum BoardPDFHTML {
         }.joined(separator: "\n")
         let emptyNotes = board.notes.isEmpty ? "<p class=\"empty\">No notes on this board yet.</p>" : noteCards
         let emptyRelations = board.connections.isEmpty ? "<p class=\"empty\">No connections on this board yet.</p>" : relations
+        let wallpaperWarning = board.wallpaperAssetID.map { images[$0]?.hasPrefix("data:image/") == true ? "" : " Wallpaper image unavailable or exceeds the export limit." } ?? ""
         return """
         <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
         @page { size: A4; margin: 15mm; }
@@ -96,7 +97,7 @@ public enum BoardPDFHTML {
         \(templateStyle)
         .hero h1.thai-title { font-family: -apple-system, 'Thonburi', sans-serif; font-weight: 400; letter-spacing: normal; }
         </style></head><body><main class="document"><header class="hero"><div class="eyebrow">CoThink Board &nbsp; / &nbsp; Board export</div><h1\(titleClass)>\(escape(board.title))</h1><div class="summary">\(board.notes.count) notes &nbsp; · &nbsp; \(board.connections.count) connections &nbsp; · &nbsp; \(board.groups.count) groups &nbsp; · &nbsp; Revision \(board.revision)</div></header>
-        <div class="section-head"><span class="section-number">01</span><h2>Board at a glance</h2></div><div class="canvas">\(svg(board: board))</div><p class="caption">A visual overview of the board. Full note text and relationships follow below.</p>
+        <div class="section-head"><span class="section-number">01</span><h2>Board at a glance</h2></div><div class="canvas">\(svg(board: board, images: images))</div><p class="caption">A visual overview of the board. Full note text and relationships follow below.\(wallpaperWarning)</p>
         <div class="section-head"><span class="section-number">02</span><h2>Notes &amp; context</h2></div><section class="notes">\(emptyNotes)</section>
         <div class="section-head"><span class="section-number">03</span><h2>Connections</h2></div><section>\(emptyRelations)</section><footer class="footer">Made with CoThink Board &nbsp; · &nbsp; \(escape(board.title))</footer></main></body></html>
         """
@@ -107,7 +108,7 @@ public enum BoardPDFHTML {
         return first.count > 80 ? String(first.prefix(77)) + "…" : first
     }
 
-    private static func svg(board: Board) -> String {
+    private static func svg(board: Board, images: [String: String]) -> String {
         let notes = Dictionary(board.notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let points = board.connections.flatMap { edge -> [ConnectionPoint] in
             guard let a = notes[edge.from], let b = notes[edge.to] else { return [] }
@@ -117,6 +118,15 @@ public enum BoardPDFHTML {
         let minY = min(0, (board.notes.map(\.y) + board.groups.map(\.y) + points.map(\.y)).min() ?? 0) - 35
         let right = max(500, (board.notes.map { $0.x + $0.width } + board.groups.map { $0.x + $0.width } + points.map(\.x)).max() ?? 0) + 35
         let bottom = max(280, (board.notes.map { $0.y + $0.height } + board.groups.map { $0.y + $0.height } + points.map(\.y)).max() ?? 0) + 35
+        let bounds = board.notes.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } + board.groups.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } + points.map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
+        let extent = BoardRect.canvasExtent(containing: bounds)
+        var background = ""
+        if board.wallpaperColor != nil || board.wallpaperAssetID != nil {
+            background = "<rect x=\"0\" y=\"0\" width=\"\(number(extent.width))\" height=\"\(number(extent.height))\" fill=\"\(color(board.wallpaperColor, fallback: "#FFFFFF"))\"/>"
+        }
+        if let id = board.wallpaperAssetID, let src = images[id], src.hasPrefix("data:image/") {
+            background += "<image href=\"\(escape(src))\" x=\"0\" y=\"0\" width=\"\(number(extent.width))\" height=\"\(number(extent.height))\" preserveAspectRatio=\"xMidYMid slice\" opacity=\"\(number(board.wallpaperOpacity ?? 0.45))\"/>"
+        }
         let groups = board.groups.map { g in
             "<rect x=\"\(number(g.x))\" y=\"\(number(g.y))\" width=\"\(number(g.width))\" height=\"\(number(g.height))\" rx=\"15\" fill=\"\(color(g.color, fallback: "#E6E9F5"))\" fill-opacity=\".38\" stroke=\"#a8acb5\" stroke-dasharray=\"7 5\"/><text x=\"\(number(g.x+13))\" y=\"\(number(g.y+22))\" fill=\"#59616c\" font-size=\"\(number(g.fontSize ?? 11))\" font-weight=\"700\">\(escape(short(g.title)))</text>"
         }.joined()
@@ -147,6 +157,6 @@ public enum BoardPDFHTML {
             let fill = color(n.color, fallback: "#FFF1B8")
             return "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath><rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"9\" fill=\"\(fill)\" stroke=\"\(color(n.strokeColor, fallback: "#939aa4"))\"/><text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(min(n.fontSize ?? 15, 22)))\" font-weight=\"600\">\(text)</text>"
         }.joined()
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(groups)\(edges)\(cards)</g></svg>"
+        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(edges)\(cards)</g></svg>"
     }
 }

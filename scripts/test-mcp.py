@@ -1,4 +1,4 @@
-import json, os, subprocess, tempfile
+import json, os, shutil, subprocess, tempfile
 from pathlib import Path
 
 binary = os.environ.get('COTHINK_MCP_BIN', str(Path(__file__).resolve().parent.parent / '.build/debug/cothink-mcp'))
@@ -46,6 +46,14 @@ _,lockboard=call(111,'edit_board',{'board_id':lockboard['id'],'expected_revision
 _,locked=call(112,'lock_note',{'board_id':lockboard['id'],'note_id':'n','group_id':'g','expected_revision':1});assert locked['groups'][0]['memberIDs']==['n'] and locked['notes'][0]['x']==20
 r,e=call(113,'lock_note',{'board_id':lockboard['id'],'note_id':'n','group_id':'g','expected_revision':1});assert r['isError']
 _,unlocked=call(114,'unlock_note',{'board_id':lockboard['id'],'note_id':'n','expected_revision':2});assert unlocked['groups'][0]['memberIDs']==[]
+_,wallboard=call(120,'create_board',{'title':'Wallpaper check'})
+_,wallboard=call(121,'set_board_wallpaper',{'board_id':wallboard['id'],'expected_revision':0,'color':'#DDEEFF'});assert wallboard['wallpaperColor']=='#DDEEFF'
+_,wallboard=call(122,'add_project_file',{'board_id':wallboard['id'],'expected_revision':1,'source_path':str(Path(__file__).resolve().parent.parent/'Assets/Mascot.png')});wall_asset=wallboard['assets'][0]['id']
+_,wallboard=call(123,'set_board_wallpaper',{'board_id':wallboard['id'],'expected_revision':2,'asset_id':wall_asset,'opacity':0.5});assert wallboard['wallpaperAssetID']==wall_asset
+_,wall_context=call(124,'get_board_context',{'board_id':wallboard['id']});assert wall_context['wallpaper']['asset_id']==wall_asset and wall_context['wallpaper']['opacity']==0.5
+r,e=call(125,'set_board_wallpaper',{'board_id':wallboard['id'],'expected_revision':3,'opacity':2});assert r['isError']
+_,wallboard=call(126,'edit_board',{'board_id':wallboard['id'],'expected_revision':3,'operations':[{'action':'delete','collection':'assets','id':wall_asset}]});assert 'wallpaperAssetID' not in wallboard
+_,wallboard=call(127,'undo',{'board_id':wallboard['id'],'expected_revision':4});assert wallboard['wallpaperAssetID']==wall_asset
 r,e=call(91,'delete_board',{'board_id':extra['id'],'expected_revision':1});assert r['isError'] and 'changed' in e.lower(),e
 _,deleted=call(92,'delete_board',{'board_id':extra['id'],'expected_revision':0});assert deleted['deleted']
 if os.environ.get('COTHINK_TEST_PDF') == '1':
@@ -56,12 +64,19 @@ if os.environ.get('COTHINK_TEST_PDF') == '1':
  r,e=call(116,'export_board_pdf',pdf_args);assert r['isError'] and 'exists' in e.lower()
  r,e=call(117,'export_board_pdf',{**pdf_args,'expected_revision':0,'overwrite':True});assert r['isError'] and 'changed' in e.lower()
  _,pdf=call(118,'export_board_pdf',{**pdf_args,'overwrite':True});assert pdf['path']==pdf_path and Path(pdf_path).read_bytes().startswith(b'%PDF-')
+ wallpaper_pdf=os.path.join(home,'wallpaper.pdf')
+ _,pdf=call(128,'export_board_pdf',{'board_id':wallboard['id'],'expected_revision':wallboard['revision'],'destination_path':wallpaper_pdf,'template':'minimal'})
+ assert Path(wallpaper_pdf).read_bytes().startswith(b'%PDF-')
+ if shutil.which('pdfimages'):
+  image_report=subprocess.check_output(['pdfimages','-list',wallpaper_pdf],text=True)
+  assert any(len(row.split())>2 and row.split()[2]=='image' for row in image_report.splitlines()),image_report
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
 r,e=call(10,'create_board',{'title':'forbidden'});assert r['isError'] and 'read-only' in e
 _,lists=call(12,'list_board_lists',{});assert lists[0]['title']=='Research'
 r,e=call(13,'delete_board_list',{'list_id':lists[0]['id'],'expected_revision':lists[0]['revision']});assert r['isError'] and 'read-only' in e
+r,e=call(15,'set_board_wallpaper',{'board_id':wallboard['id'],'expected_revision':wallboard['revision'],'color':'#000000'});assert r['isError'] and 'read-only' in e
 if os.environ.get('COTHINK_TEST_PDF') == '1':
  r,e=call(14,'export_board_pdf',pdf_args);assert r['isError'] and 'read-only' in e
 _,b=call(11,'get_board',{'board_id':b['id']});assert len(b['notes'])==1

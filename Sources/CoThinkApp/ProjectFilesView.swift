@@ -69,7 +69,7 @@ struct ProjectFilesView: View {
             Image(systemName: iconName(for: url)).frame(width: 22).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(asset.name).lineLimit(1)
-                Text("\(asset.relativePath) · used in \(board.notes.filter { $0.assetIDs?.contains(asset.id) == true }.count) notes")
+                Text("\(asset.relativePath) · used in \(board.notes.filter { $0.assetIDs?.contains(asset.id) == true }.count) notes\(board.wallpaperAssetID == asset.id ? " · wallpaper" : "")")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
@@ -78,7 +78,7 @@ struct ProjectFilesView: View {
             Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
                 .buttonStyle(.borderless).help("Show in Finder")
             Button(role: .destructive) { removeAsset(asset.id) } label: { Image(systemName: "minus.circle") }
-                .buttonStyle(.borderless).help("Remove file from this board (keeps the file on disk)")
+                .buttonStyle(.borderless).help(board.wallpaperAssetID == asset.id ? "Remove file and clear wallpaper (keeps the file on disk)" : "Remove file from this board (keeps the file on disk)")
         }
         .padding(.vertical, 4)
     }
@@ -165,6 +165,7 @@ struct ProjectFilesView: View {
         guard model.board?.id == boardID else { return }
         _ = model.mutate { current in
             current.assets?.removeAll { $0.id == id }
+            if current.wallpaperAssetID == id { current.wallpaperAssetID = nil }
             for index in current.notes.indices {
                 current.notes[index].assetIDs?.removeAll { $0 == id }
             }

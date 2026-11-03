@@ -44,6 +44,7 @@ let tools: [[String: Any]] = [
     tool("update_board_list", "Replace a board list with the complete list object returned by list_board_lists, using its observed revision. Fields include title, description, boardIDs, tags, flagged and color.", ["list": objectSchema, "expected_revision": integerSchema], ["list", "expected_revision"]),
     tool("delete_board_list", "Delete a list without deleting its boards.", ["list_id": stringSchema, "expected_revision": integerSchema], ["list_id", "expected_revision"]),
     tool("set_board_metadata", "Set board tags, flagged and color. Supply the observed board revision; omit fields to leave them unchanged.", ["board_id": stringSchema, "expected_revision": integerSchema, "tags": ["type": "array", "items": stringSchema], "flagged": ["type": "boolean"], "color": stringSchema], ["board_id", "expected_revision"]),
+    tool("set_board_wallpaper", "Set board wallpaper color (#RRGGBB), project image asset ID, or image opacity (0 to 1). Omit fields to keep them; use null to reset a field. Use add_project_file first to import an image. Changes are undoable.", ["board_id": stringSchema, "expected_revision": integerSchema, "color": ["type": ["string", "null"]], "asset_id": ["type": ["string", "null"]], "opacity": ["type": ["number", "null"], "minimum": 0, "maximum": 1]], ["board_id", "expected_revision"]),
     tool("list_boards", "List available boards with their current contents and revisions.", [:]),
     tool("get_board", "Read a complete board, including its project folder, assets attached to notes, labeled directional connections, groups, and revision.", ["board_id": stringSchema], ["board_id"]),
     tool("get_board_context", "Read a graph-oriented overview of every note, group, connection, label, direction, path, attachment, and spatial position on a board.", ["board_id": stringSchema], ["board_id"]),
@@ -123,6 +124,7 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
                     if let assetIDs = notes[i]["assetIDs"] as? [String] { notes[i]["assetIDs"] = assetIDs.filter { $0 != itemID } }
                 }
                 board["notes"] = notes
+                if board["wallpaperAssetID"] as? String == itemID { board.removeValue(forKey: "wallpaperAssetID") }
             }
         default:
             throw ToolFailure(message: "Unknown action: \(action)")
@@ -372,6 +374,31 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         if let flagged = args["flagged"] as? Bool { board.flagged = flagged }
         if let color = args["color"] as? String { board.color = color }
         return try object(store.replace(board, expectedRevision: integer(args, "expected_revision"), actor: actor))
+    case "set_board_wallpaper":
+        var board = try store.get(string(args, "board_id"))
+        let revision = try integer(args, "expected_revision")
+        guard board.revision == revision else { throw BoardError.conflict }
+        guard ["color", "asset_id", "opacity"].contains(where: { args[$0] != nil }) else { throw ToolFailure(message: "Provide color, asset_id, or opacity") }
+        if let value = args["color"] {
+            if value is NSNull { board.wallpaperColor = nil }
+            else if let color = value as? String { board.wallpaperColor = color }
+            else { throw ToolFailure(message: "color must be a hex string or null") }
+        }
+        if let value = args["opacity"] {
+            if value is NSNull { board.wallpaperOpacity = nil }
+            else if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { board.wallpaperOpacity = number.doubleValue }
+            else { throw ToolFailure(message: "opacity must be a number or null") }
+        }
+        if let value = args["asset_id"] {
+            if value is NSNull { board.wallpaperAssetID = nil }
+            else if let id = value as? String, let asset = board.projectAssets.first(where: { $0.id == id }) {
+                let root = (board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? store.defaultProjectFilesDirectory(for: board.id)).standardizedFileURL.resolvingSymlinksInPath()
+                let file = root.appendingPathComponent(asset.relativePath).standardizedFileURL.resolvingSymlinksInPath()
+                guard file.path.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/"), NSImage(contentsOf: file) != nil else { throw ToolFailure(message: "Wallpaper must be a readable image in the board's project folder") }
+                board.wallpaperAssetID = id
+            } else { throw ToolFailure(message: "asset_id must identify a project image or be null") }
+        }
+        return try object(store.replace(board, expectedRevision: revision, actor: actor))
     case "list_boards": return try object(store.list())
     case "get_board": return try object(store.get(string(args, "board_id")))
     case "get_board_context":
@@ -379,6 +406,7 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         var context = boardContext(board)
         context["lists"] = try object(store.lists().filter { $0.boardIDs.contains(board.id) })
         context["board_metadata"] = ["tags": board.tags ?? [], "flagged": board.flagged ?? false, "color": board.color ?? ""] as [String: Any]
+        context["wallpaper"] = ["color": board.wallpaperColor as Any? ?? NSNull(), "asset_id": board.wallpaperAssetID as Any? ?? NSNull(), "opacity": board.wallpaperOpacity ?? 0.45] as [String: Any]
         return context
     case "read_project_file": return try readProjectFile(args, store: store)
     case "read_note_image": return try readNoteImage(args, store: store)

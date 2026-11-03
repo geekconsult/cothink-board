@@ -19,6 +19,7 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 - **Meaningful connections:** name relationships, choose one-way, two-way, or no arrows, and shape paths as straight lines, curves, or custom bends.
 - **Board organization:** create lists of boards with descriptions, tags, flags, and colors. A board can appear in more than one list and also has its own tags, flag, and color.
 - **Project files:** keep images, PDFs, and other files in a board's file library; attach them to notes and open them from the canvas.
+- **Per-board wallpaper:** choose a canvas color, add an image, and adjust image strength without changing other boards.
 - **An agent that sees the graph:** the local MCP server exposes notes, groups, connections, labels, directions, positions, attached files, and list context. Agents can also make revision-checked edits.
 - **A native macOS workspace:** light, dark, and system appearance; hideable panels; trackpad pinch zoom; keyboard shortcuts; automatic saving; shared undo and redo.
 - **Portable board data:** export a board as JSON and import it later. Project file contents and list membership are stored separately; see [Data and backups](#data-and-backups).
@@ -65,6 +66,10 @@ The left and right toolbar buttons show or hide the boards sidebar and inspector
 - Dragging a group or one of its locked notes moves the group and its members together.
 - In a note's inspector choose **Unlock from group** to move it independently. Choose **Lock to group** to lock that individual note to a group again, keeping its current position. A note can be locked to one group at a time.
 - For an existing group, **Lock notes inside group** locks notes whose centers are inside its bounds. A group without locked member IDs is a visual background until members are locked to it.
+
+### Change a board's wallpaper
+
+Choose the photo icon in the toolbar or **Board → Change Wallpaper…**. Select a system or custom background color, choose an image from your Mac or **Project Images**, adjust its strength, and select **Save Wallpaper**. A newly chosen image is copied into the board's Project Files folder; existing project images can be reused. Choose **System** and remove the image to restore the default background. Wallpaper changes participate in board undo and redo. Removing the image from Project Files also clears its wallpaper reference, while keeping the file on disk.
 
 ### Organize boards into lists
 
@@ -140,12 +145,15 @@ For example, to label and route an existing connection, an MCP client can call `
 | Create and edit boards | `create_board`, `edit_board`, `replace_board`, `import_board`, `delete_board` |
 | Organize lists | `list_board_lists`, `create_board_list`, `update_board_list`, `delete_board_list`, `set_board_metadata` |
 | Work with files and PDF | `add_project_file`, `read_project_file`, `read_note_image`, `export_board_pdf` |
+| Set the wallpaper | `set_board_wallpaper` |
 | Lock and unlock a note | `lock_note`, `unlock_note` |
 | Travel shared history | `undo`, `redo` |
 
 Existing-board mutations require `expected_revision`; list updates and deletion use their own list revision. `edit_board` supports ordered `rename`, `add`, `update`, and `delete` operations across notes, groups, connections, and assets. The server publishes input schemas and field details through `tools/list`. `lock_note` transfers a note from its previous group if necessary, without changing its position.
 
 `export_board_pdf` writes a PDF snapshot to an absolute `destination_path`. Supply `board_id`, `expected_revision`, and a `template` of `editorial`, `studio`, or `minimal`; set `overwrite` to `true` only when replacing an existing file. The tool requires a macOS graphical session and the bundled `cothink-pdf` helper. It writes to the local filesystem and is disabled in MCP read-only mode.
+
+Use `set_board_wallpaper` with a board ID and current revision to set `color` (`#RRGGBB`), `asset_id` for an image already in Project Files, and/or `opacity` from 0 to 1. Omit a field to keep it or pass `null` to reset it. `get_board_context` reports the wallpaper settings; use `add_project_file` first to import a new image. The PDF canvas overview includes the wallpaper when the image meets the PDF export limits.
 
 ### File access and configuration
 
@@ -194,3 +202,9 @@ COTHINK_TEST_PDF=1 python3 scripts/test-mcp.py
 ```
 
 The canvas grows right and down from its top-left origin. Sidebar search matches board titles, tags, and note text; it does not highlight matches. There is no semantic search tool or in-app agent permission management. Undo and redo share board history across users and agents. The app is unsigned and has not been notarized or packaged as a signed distribution.
+
+### Navigating and selecting
+
+- Shift-click notes to add or remove them from a selection; drag the selection to move it together. Dragging a locked note also moves its group and other locked members. Drag on empty canvas to select notes within a rectangle. Delete removes the selected notes.
+- Notes inside a group show a lock control. Unlock a note to move it independently; to lock it again, place its center inside a group and click the open lock. In overlapping groups the topmost group is used.
+- Use the overview in the lower-right corner to see the board and click or drag to pan.

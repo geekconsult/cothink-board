@@ -2,6 +2,29 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testWallpaperPersistsValidatesAndAppearsInPDFHTML() throws {
+        let store = try store()
+        var board = try store.create(title: "Wallpaper", actor: "user")
+        XCTAssertNil(board.wallpaperColor); XCTAssertNil(board.wallpaperAssetID)
+        board.assets = [ProjectAsset(id: "wall", name: "wall.png", relativePath: "wall.png")]
+        board.wallpaperColor = "#DDEEFF"; board.wallpaperAssetID = "wall"; board.wallpaperOpacity = 0.65
+        let saved = try store.replace(board, expectedRevision: 0, actor: "user")
+        let reloaded = try store.get(saved.id)
+        XCTAssertEqual(reloaded.wallpaperColor, "#DDEEFF"); XCTAssertEqual(reloaded.wallpaperAssetID, "wall")
+        XCTAssertEqual(reloaded.wallpaperOpacity, 0.65)
+        let html = BoardPDFHTML.render(board: reloaded, template: .editorial, images: ["wall": "data:image/png;base64,YWJj"])
+        XCTAssertTrue(html.contains("fill=\"#DDEEFF\"")); XCTAssertTrue(html.contains("<image href=\"data:image/png;base64,YWJj\""))
+        XCTAssertTrue(html.contains("opacity=\"0.65\""))
+        XCTAssertTrue(BoardPDFHTML.render(board: reloaded, template: .minimal).contains("Wallpaper image unavailable"))
+        var invalid = reloaded; invalid.assets = []
+        XCTAssertThrowsError(try store.replace(invalid, expectedRevision: saved.revision, actor: "user"))
+        invalid = reloaded; invalid.wallpaperColor = "red"
+        XCTAssertThrowsError(try store.replace(invalid, expectedRevision: saved.revision, actor: "user"))
+        invalid = reloaded; invalid.wallpaperOpacity = 1.1
+        XCTAssertThrowsError(try store.replace(invalid, expectedRevision: saved.revision, actor: "user"))
+        let undone = try store.undo(saved.id, actor: "user", expectedRevision: saved.revision)
+        XCTAssertNil(undone.wallpaperAssetID); XCTAssertNil(undone.wallpaperColor)
+    }
     func testPDFTemplatesEscapeContentAndIncludeBoardContext() {
         var board = Board(title: "Planning <script>", notes: [Note(id: "a", text: "Alpha & detail\nsecond line\nสวัสดี"), Note(id: "b", text: "Beta", x: 400)])
         board.notes[0].assetIDs = ["asset"]
@@ -130,6 +153,17 @@ final class BoardCoreTests: XCTestCase {
         let undone = try store.undo(saved.id, actor: "user", expectedRevision: saved.revision)
         XCTAssertEqual(undone.notes, original.notes)
         XCTAssertEqual(undone.groups, original.groups)
+    }
+    func testMultiSelectionMovesLockedGroupsOnlyOnceAndClampsTogether() {
+        var group = BoardGroup(id: "g", x: 100, y: 80, width: 400, height: 300)
+        group.memberIDs = ["a", "b"]
+        var board = Board(notes: [Note(id: "a", x: 110, y: 90), Note(id: "b", x: 220, y: 160), Note(id: "c", x: 50, y: 40)], groups: [group])
+        board.moveSelection(noteIDs: ["a", "b", "c"], dx: -100, dy: -100)
+        XCTAssertEqual(board.notes.map(\.x), [60, 170, 0])
+        XCTAssertEqual(board.notes.map(\.y), [50, 120, 0])
+        XCTAssertEqual(board.groups[0].x, 50)
+        XCTAssertEqual(board.groups[0].y, 40)
+        XCTAssertEqual(board.groups[0].memberIDs, ["a", "b"])
     }
     func testSelectionWorksInEitherDirectionAndGroupMembersPersist() throws {
         let forward = BoardRect.selection(fromX: 20, fromY: 30, toX: 300, toY: 200)

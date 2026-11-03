@@ -123,6 +123,9 @@ public struct Board: Codable, Identifiable, Equatable {
     public var tags: [String]? = nil
     public var flagged: Bool? = nil
     public var color: String? = nil
+    public var wallpaperColor: String? = nil
+    public var wallpaperAssetID: String? = nil
+    public var wallpaperOpacity: Double? = nil
     public init(version: Int = 1, id: String = UUID().uuidString, title: String = "Untitled Board", revision: Int = 0, notes: [Note] = [], connections: [Connection] = [], groups: [BoardGroup] = [], projectFilesPath: String? = nil, assets: [ProjectAsset]? = []) {
         self.version = version; self.id = id; self.title = title; self.revision = revision; self.notes = notes; self.connections = connections; self.groups = groups
         self.projectFilesPath = projectFilesPath; self.assets = assets
@@ -155,6 +158,23 @@ public extension Board {
 
     func groupContaining(noteID: String) -> BoardGroup? {
         groups.last { $0.memberIDs?.contains(noteID) == true }
+    }
+
+    // A selection that includes a locked note moves its whole group once.
+    func selectionMovement(noteIDs: Set<String>, dx: Double, dy: Double) -> (noteIDs: Set<String>, groupIDs: Set<String>, dx: Double, dy: Double) {
+        let groupIDs = Set(groups.filter { !Set($0.memberIDs ?? []).isDisjoint(with: noteIDs) }.map(\.id))
+        let allNotes = noteIDs.union(groups.filter { groupIDs.contains($0.id) }.flatMap { $0.memberIDs ?? [] })
+        let movingNotes = notes.filter { allNotes.contains($0.id) }
+        let movingGroups = groups.filter { groupIDs.contains($0.id) }
+        let minX = (movingNotes.map(\.x) + movingGroups.map(\.x)).min() ?? 0
+        let minY = (movingNotes.map(\.y) + movingGroups.map(\.y)).min() ?? 0
+        return (allNotes, groupIDs, max(-minX, dx), max(-minY, dy))
+    }
+
+    mutating func moveSelection(noteIDs: Set<String>, dx: Double, dy: Double) {
+        let movement = selectionMovement(noteIDs: noteIDs, dx: dx, dy: dy)
+        for i in notes.indices where movement.noteIDs.contains(notes[i].id) { notes[i].x += movement.dx; notes[i].y += movement.dy }
+        for i in groups.indices where movement.groupIDs.contains(groups[i].id) { groups[i].x += movement.dx; groups[i].y += movement.dy }
     }
 
     func groupMovement(id: String, dx: Double, dy: Double) -> (dx: Double, dy: Double)? {
@@ -332,6 +352,9 @@ public final class BoardStore {
         let noteIDs = Set(ids)
         let assets = b.assets ?? []
         let assetIDs = assets.map(\.id)
+        guard b.wallpaperColor == nil || b.wallpaperColor!.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil,
+              b.wallpaperOpacity == nil || (b.wallpaperOpacity!.isFinite && (0...1).contains(b.wallpaperOpacity!)),
+              b.wallpaperAssetID == nil || assetIDs.contains(b.wallpaperAssetID!) else { throw BoardError.invalid("wallpaper") }
         guard Set(assetIDs).count == assetIDs.count, !assetIDs.contains(""),
               assets.allSatisfy({ !$0.name.isEmpty && !$0.relativePath.isEmpty && !$0.relativePath.hasPrefix("/") && !$0.relativePath.split(separator: "/").contains("..") }),
               b.notes.allSatisfy({
