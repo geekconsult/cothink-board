@@ -697,18 +697,24 @@ struct WorkspaceView: View {
                                         folder: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? model.defaultProjectFilesDirectory(for: board.id),
                                         width: extent.width, height: extent.height, colorScheme: colorScheme)
                     .contentShape(Rectangle())
-                    .onTapGesture {
-                        finishInlineEditing()
-                        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
-                        guard !model.draftBlocked else { return }
-                        model.clearSelection()
-                        showInspector = false
-                        canvasFocused = true
-                    }
-                    .onTapGesture(count: 2, coordinateSpace: .local) { point in
-                        model.addNote(x: max(0, point.x - 95), y: max(0, point.y - 50))
-                    }
-                    .gesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("boardCanvas"))
+                    .gesture(SpatialTapGesture(count: 2, coordinateSpace: .local)
+                        .exclusively(before: SpatialTapGesture(count: 1, coordinateSpace: .local))
+                        .onEnded { result in
+                            switch result {
+                            case .first(let tap):
+                                finishInlineEditing()
+                                model.addNote(x: max(0, tap.location.x - 95), y: max(0, tap.location.y - 50))
+                                canvasFocused = true
+                            case .second:
+                                finishInlineEditing()
+                                NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                                guard !model.draftBlocked else { return }
+                                model.clearSelection()
+                                showInspector = false
+                                canvasFocused = true
+                            }
+                        })
+                    .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("boardCanvas"))
                         .onChanged { value in
                             if selectionStart == nil {
                                 finishInlineEditing()
@@ -780,8 +786,15 @@ struct WorkspaceView: View {
         .focusable()
         .focused($canvasFocused)
         .focusEffectDisabled()
+        .onKeyPress(.delete) {
+            guard model.hasSelection, editingObjectID == nil,
+                  !(NSApp.keyWindow?.firstResponder is NSTextView),
+                  !(NSApp.keyWindow?.firstResponder is NSTextField) else { return .ignored }
+            model.deleteSelection()
+            return .handled
+        }
         .onDeleteCommand {
-            guard !(NSApp.keyWindow?.firstResponder is NSTextView), !(NSApp.keyWindow?.firstResponder is NSTextField) else { return }
+            guard editingObjectID == nil, !(NSApp.keyWindow?.firstResponder is NSTextView), !(NSApp.keyWindow?.firstResponder is NSTextField) else { return }
             model.deleteSelection()
         }
         .simultaneousGesture(MagnificationGesture()
@@ -841,13 +854,13 @@ struct WorkspaceView: View {
             let rect = state.preview
             result.x = rect.x; result.y = rect.y; result.width = rect.width; result.height = rect.height
         } else if draggingSelection, let board = model.board {
-            let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom)
+            let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height)
             if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
         } else if draggingID == note.id {
-            result.x = max(0, note.x + dragTranslation.width / zoom)
-            result.y = max(0, note.y + dragTranslation.height / zoom)
+            result.x = max(0, note.x + dragTranslation.width)
+            result.y = max(0, note.y + dragTranslation.height)
         } else if let groupID = draggingID, let group = model.board?.groups.first(where: { $0.id == groupID }), group.memberIDs?.contains(note.id) == true {
-            if let delta = model.board?.groupMovement(id: group.id, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) {
+            if let delta = model.board?.groupMovement(id: group.id, dx: dragTranslation.width, dy: dragTranslation.height) {
                 result.x = note.x + delta.dx
                 result.y = note.y + delta.dy
             }
@@ -959,7 +972,7 @@ struct WorkspaceView: View {
             .simultaneousGesture(TapGesture(count: 2).onEnded {
                 beginInlineEditing(note)
             })
-            .gesture(DragGesture(minimumDistance: 3).onChanged { value in
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("boardCanvas")).onChanged { value in
                 if draggingID == nil { finishInlineEditing(); NotificationCenter.default.post(name: .flushBoardDraft, object: nil) }
                 guard !model.draftBlocked else { return }
                 if draggingID == nil {
@@ -972,7 +985,7 @@ struct WorkspaceView: View {
                 let wasSelection = draggingSelection
                 draggingID = nil; draggingSelection = false; dragTranslation = .zero
                 model.mutate { board in
-                    let dx = value.translation.width / zoom, dy = value.translation.height / zoom
+                    let dx = value.translation.width, dy = value.translation.height
                     if wasSelection { board.moveSelection(noteIDs: model.selectedNoteIDs, dx: dx, dy: dy); return }
                     if draggedID != note.id { _ = board.moveGroup(id: draggedID, dx: dx, dy: dy); return }
                     guard let index = board.notes.firstIndex(where: { $0.id == note.id }) else { return }
@@ -983,8 +996,8 @@ struct WorkspaceView: View {
     }
 
     func displayedGroupRect(_ group: BoardGroup) -> BoardRect {
-        let selectionDelta = draggingSelection ? model.board?.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) : nil
-        let delta = selectionDelta?.groupIDs.contains(group.id) == true ? (dx: selectionDelta!.dx, dy: selectionDelta!.dy) : (draggingID == group.id ? model.board?.groupMovement(id: group.id, dx: dragTranslation.width / zoom, dy: dragTranslation.height / zoom) : nil)
+        let selectionDelta = draggingSelection ? model.board?.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height) : nil
+        let delta = selectionDelta?.groupIDs.contains(group.id) == true ? (dx: selectionDelta!.dx, dy: selectionDelta!.dy) : (draggingID == group.id ? model.board?.groupMovement(id: group.id, dx: dragTranslation.width, dy: dragTranslation.height) : nil)
         let dx = delta?.dx ?? 0, dy = delta?.dy ?? 0
         return resizeState?.id == group.id ? resizeState!.preview : BoardRect(x: group.x + dx, y: group.y + dy, width: group.width, height: group.height)
     }
@@ -1010,7 +1023,7 @@ struct WorkspaceView: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             beginInlineEditing(group)
         })
-        .gesture(DragGesture(minimumDistance: 3).onChanged { value in
+        .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("boardCanvas")).onChanged { value in
             if draggingID == nil { finishInlineEditing(); NotificationCenter.default.post(name: .flushBoardDraft, object: nil) }
             guard !model.draftBlocked else { return }
             draggingID = group.id; dragTranslation = value.translation
@@ -1018,7 +1031,7 @@ struct WorkspaceView: View {
             guard draggingID == group.id else { return }
             draggingID = nil; dragTranslation = .zero
             model.mutate { board in
-                _ = board.moveGroup(id: group.id, dx: value.translation.width / zoom, dy: value.translation.height / zoom)
+                _ = board.moveGroup(id: group.id, dx: value.translation.width, dy: value.translation.height)
             }
         })
     }
