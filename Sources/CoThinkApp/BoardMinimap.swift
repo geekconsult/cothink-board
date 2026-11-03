@@ -45,12 +45,19 @@ struct BoardMinimap: View {
     let zoom: Double
     let viewport: CGRect
     let navigate: (CGPoint) -> Void
-    private let mapWidth: CGFloat = 190
+    @State private var expanded = true
+    private let mapWidth: CGFloat = 130
     private var mapHeight: CGFloat { mapWidth * extent.height / extent.width }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack { Text("Overview").font(.caption.weight(.semibold)); Spacer(); Image(systemName: "hand.draw").font(.caption2) }
-            Canvas { context, size in
+            HStack {
+                if expanded { Text("Overview").font(.caption.weight(.semibold)); Spacer(minLength: 4) }
+                Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.down" : "map") }
+                    .buttonStyle(.plain)
+                    .help(expanded ? "Hide overview" : "Show overview")
+                    .accessibilityLabel(expanded ? "Hide board overview" : "Show board overview")
+            }
+            if expanded { Canvas { context, size in
                 let sx = size.width / extent.width, sy = size.height / extent.height
                 for group in board.groups {
                     let rect = CGRect(x: group.x * sx, y: group.y * sy, width: group.width * sx, height: group.height * sy)
@@ -72,8 +79,10 @@ struct BoardMinimap: View {
                                  y: max(0, min(mapHeight, value.location.y)) / mapHeight * extent.height * zoom))
             })
             .accessibilityLabel("Board overview. Click or drag to navigate")
+            }
         }
-        .padding(9).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .frame(width: expanded ? mapWidth : 18)
+        .padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.12)))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
