@@ -22,6 +22,7 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 - **An agent that sees the graph:** the local MCP server exposes notes, groups, connections, labels, directions, positions, attached files, and list context. Agents can also make revision-checked edits.
 - **A native macOS workspace:** light, dark, and system appearance; hideable panels; trackpad pinch zoom; keyboard shortcuts; automatic saving; shared undo and redo.
 - **Portable board data:** export a board as JSON and import it later. Project file contents and list membership are stored separately; see [Data and backups](#data-and-backups).
+- **PDF reports:** preview and export a board using one of three HTML-based templates, with an overview, full note text, relationships, and supported attached images.
 
 ## How it works
 
@@ -68,6 +69,16 @@ The left and right toolbar buttons show or hide the boards sidebar and inspector
 ### Organize boards into lists
 
 Choose the folder button in the sidebar to manage lists. Each list has a title, description, tags, flag, color, and a selection of boards. Choose a list, make changes, and select **Save**. Use the × button or Escape to close the manager. Deleting a list leaves its boards intact; deleting a board removes it from lists. Use the board settings button to edit a board's own name, tags, flag, and color.
+
+### Export a PDF
+
+Choose **Export → Export as PDF…**, select a template, check the preview, and choose **Save PDF…** to select a destination. The three designs are:
+
+- **Editorial:** warm paper and a serif title.
+- **Studio:** a navy header and a two-column note layout.
+- **Minimal:** a restrained black-and-white layout for printing.
+
+Each A4 PDF includes a scaled canvas overview followed by full note text, project-file names, supported image attachments, and connection labels and directions. The overview abbreviates note text; the complete text appears in the notes section. Attached images are included up to 5 MB each and 20 MB in total. Missing, unsupported, or oversized images are identified in the report. Other attachments are listed by name and are not embedded. PDF is a presentation format; use JSON export to import and edit a board later.
 
 ## Connect an AI agent with MCP
 
@@ -128,11 +139,13 @@ For example, to label and route an existing connection, an MCP client can call `
 | Find and understand boards | `list_boards`, `get_board`, `get_board_context`, `board_history` |
 | Create and edit boards | `create_board`, `edit_board`, `replace_board`, `import_board`, `delete_board` |
 | Organize lists | `list_board_lists`, `create_board_list`, `update_board_list`, `delete_board_list`, `set_board_metadata` |
-| Work with files | `add_project_file`, `read_project_file`, `read_note_image` |
+| Work with files and PDF | `add_project_file`, `read_project_file`, `read_note_image`, `export_board_pdf` |
 | Lock and unlock a note | `lock_note`, `unlock_note` |
 | Travel shared history | `undo`, `redo` |
 
 Existing-board mutations require `expected_revision`; list updates and deletion use their own list revision. `edit_board` supports ordered `rename`, `add`, `update`, and `delete` operations across notes, groups, connections, and assets. The server publishes input schemas and field details through `tools/list`. `lock_note` transfers a note from its previous group if necessary, without changing its position.
+
+`export_board_pdf` writes a PDF snapshot to an absolute `destination_path`. Supply `board_id`, `expected_revision`, and a `template` of `editorial`, `studio`, or `minimal`; set `overwrite` to `true` only when replacing an existing file. The tool requires a macOS graphical session and the bundled `cothink-pdf` helper. It writes to the local filesystem and is disabled in MCP read-only mode.
 
 ### File access and configuration
 
@@ -150,7 +163,7 @@ Read-only mode is client configuration, not an authentication or security bounda
 
 By default, the app stores its database and history in `~/Library/Application Support/CoThinkBoard/`. Project files default to `~/Library/Application Support/CoThinkBoard/Projects/<board-id>/`; a board can also use a folder you choose in **Files**.
 
-**Export** writes the current board as JSON, including its notes, connections, groups, and project-file metadata. It does not embed project-file contents, list membership, undo history, or change attribution. A board can also contain local file paths. Keep the project folder with the JSON when backing up or sharing it, and check the project-file location after import. Import creates a separate board with a new ID; it does not bundle or automatically copy the files.
+**Export as JSON** writes the current board as JSON, including its notes, connections, groups, and project-file metadata. It does not embed project-file contents, list membership, undo history, or change attribution. A board can also contain local file paths. Keep the project folder with the JSON when backing up or sharing it, and check the project-file location after import. Import creates a separate board with a new ID; it does not bundle or automatically copy the files.
 
 ## Keyboard shortcuts
 
@@ -176,6 +189,8 @@ By default, the app stores its database and history in `~/Library/Application Su
 ```sh
 swift test
 python3 scripts/test-mcp.py
+# Optional PDF export integration check, in a macOS graphical session:
+COTHINK_TEST_PDF=1 python3 scripts/test-mcp.py
 ```
 
 The canvas grows right and down from its top-left origin. Sidebar search matches board titles, tags, and note text; it does not highlight matches. There is no semantic search tool or in-app agent permission management. Undo and redo share board history across users and agents. The app is unsigned and has not been notarized or packaged as a signed distribution.

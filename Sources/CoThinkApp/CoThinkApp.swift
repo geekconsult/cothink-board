@@ -24,6 +24,7 @@ struct CoThinkApp: App {
                 Button("Delete Selection") { model.deleteSelection() }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection)
                 Divider()
                 Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil)
+                Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil)
             }
             CommandGroup(after: .undoRedo) {
                 Button("Undo Board Change") { model.undo() }.keyboardShortcut("z", modifiers: .command)
@@ -359,6 +360,7 @@ struct WorkspaceView: View {
     @State private var showingDeleteBoard = false
     @State private var showingMCP = false
     @State private var showingProjectFiles = false
+    @State private var pdfExportBoard: Board?
     @State private var showingListManager = false
     @State private var showingBoardSettings = false
     @State private var draggingID: String?
@@ -406,6 +408,7 @@ struct WorkspaceView: View {
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
         .onReceive(NotificationCenter.default.publisher(for: .showProjectFiles)) { _ in openProjectFiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .exportPDFCommand)) { _ in openPDFExport() }
         .onReceive(NotificationCenter.default.publisher(for: .zoomInCommand)) { _ in zoomStep(1) }
         .onReceive(NotificationCenter.default.publisher(for: .zoomOutCommand)) { _ in zoomStep(-1) }
         .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in zoom = 1.0 }
@@ -424,6 +427,9 @@ struct WorkspaceView: View {
         }
         .sheet(isPresented: $showingListManager) { ListManagerView(model: model).frame(minWidth: 650, minHeight: 470) }
         .sheet(isPresented: $showingBoardSettings) { if let board = model.board { BoardSettingsView(model: model, board: board).frame(width: 450) } }
+        .sheet(item: $pdfExportBoard) { board in
+            PDFExportView(board: board, projectFolder: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? model.defaultProjectFilesDirectory(for: board.id))
+        }
     }
 
     var workspaceBackground: some View {
@@ -508,6 +514,13 @@ struct WorkspaceView: View {
         showingProjectFiles = true
     }
 
+    func openPDFExport() {
+        finishInlineEditing()
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !model.draftBlocked else { return }
+        pdfExportBoard = model.board
+    }
+
     func requestGroup() {
         guard model.board != nil else { return }
         if !model.selectedNoteIDs.isEmpty {
@@ -578,7 +591,11 @@ struct WorkspaceView: View {
             Button("MCP", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
                 .help("Connect an AI agent")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
-            Button("Export", systemImage: "square.and.arrow.up", action: model.exportBoard).disabled(board == nil)
+            Menu {
+                Button("Export as JSON…", action: model.exportBoard)
+                Button("Export as PDF…", action: openPDFExport)
+            } label: { Label("Export", systemImage: "square.and.arrow.up") }
+                .menuStyle(.borderlessButton).fixedSize().disabled(board == nil)
             Divider().frame(height: 24)
             Button(action: toggleInspector) {
                 Image(systemName: "sidebar.right")
@@ -1247,6 +1264,7 @@ extension Notification.Name {
     static let flushBoardDraft = Notification.Name("CoThinkFlushBoardDraft")
     static let createGroupCommand = Notification.Name("CoThinkCreateGroupCommand")
     static let showProjectFiles = Notification.Name("CoThinkShowProjectFiles")
+    static let exportPDFCommand = Notification.Name("CoThinkExportPDFCommand")
     static let zoomInCommand = Notification.Name("CoThinkZoomInCommand")
     static let zoomOutCommand = Notification.Name("CoThinkZoomOutCommand")
     static let zoomResetCommand = Notification.Name("CoThinkZoomResetCommand")

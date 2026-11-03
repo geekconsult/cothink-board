@@ -7,12 +7,15 @@ let package = Package(
     products: [
         .library(name: "BoardCore", targets: ["BoardCore"]),
         .executable(name: "CoThinkBoard", targets: ["CoThinkApp"]),
-        .executable(name: "cothink-mcp", targets: ["CoThinkMCP"])
+        .executable(name: "cothink-mcp", targets: ["CoThinkMCP"]),
+        .executable(name: "cothink-pdf", targets: ["CoThinkPDF"])
     ],
     targets: [
         .target(name: "BoardCore"),
-        .executableTarget(name: "CoThinkApp", dependencies: ["BoardCore"]),
+        .target(name: "BoardPDFRendering", dependencies: ["BoardCore"]),
+        .executableTarget(name: "CoThinkApp", dependencies: ["BoardCore", "BoardPDFRendering"]),
         .executableTarget(name: "CoThinkMCP", dependencies: ["BoardCore"]),
+        .executableTarget(name: "CoThinkPDF", dependencies: ["BoardCore", "BoardPDFRendering"]),
         .testTarget(name: "BoardCoreTests", dependencies: ["BoardCore"])
     ]
 )

@@ -9,8 +9,10 @@ cp Assets/Mascot.png "$app/Contents/Resources/Mascot.png"
 cp Assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 cp "$bin_dir/CoThinkBoard" "$app/Contents/MacOS/CoThinkBoard.new"
 cp "$bin_dir/cothink-mcp" "$app/Contents/MacOS/cothink-mcp.new"
+cp "$bin_dir/cothink-pdf" "$app/Contents/MacOS/cothink-pdf.new"
 mv -f "$app/Contents/MacOS/CoThinkBoard.new" "$app/Contents/MacOS/CoThinkBoard"
 mv -f "$app/Contents/MacOS/cothink-mcp.new" "$app/Contents/MacOS/cothink-mcp"
+mv -f "$app/Contents/MacOS/cothink-pdf.new" "$app/Contents/MacOS/cothink-pdf"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

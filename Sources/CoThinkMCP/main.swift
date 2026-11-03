@@ -56,6 +56,7 @@ let tools: [[String: Any]] = [
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
     tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
     tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
+    tool("export_board_pdf", "Export a snapshot of a board to an absolute local PDF path using the same HTML templates as the app. template is editorial, studio, or minimal. Set overwrite to true to replace an existing file. Requires a macOS graphical session and the bundled cothink-pdf helper. This writes to the local filesystem and is disabled in read-only mode.", ["board_id": stringSchema, "expected_revision": integerSchema, "destination_path": stringSchema, "template": ["type": "string", "enum": ["editorial", "studio", "minimal"]], "overwrite": ["type": "boolean"]], ["board_id", "expected_revision", "destination_path", "template"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
     tool("lock_note", "Lock one note to a group so moving either moves them together. Transfers it from any previous group and keeps its current position. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "group_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "group_id", "expected_revision"]),
     tool("undo", "Undo the latest board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
@@ -189,6 +190,41 @@ func uniqueProjectFileName(_ fileName: String, in directory: URL, reserved: Set<
         suffix += 1
     }
     return candidate
+}
+
+private struct PDFExportRequest: Encodable {
+    let board: Board
+    let projectFolder: String
+    let template: String
+    let destination: String
+    let overwrite: Bool
+}
+
+func exportBoardPDF(_ args: [String: Any], store: BoardStore) throws -> Any {
+    let board = try store.get(string(args, "board_id"))
+    let revision = try integer(args, "expected_revision")
+    guard board.revision == revision else { throw BoardError.conflict }
+    let template = try string(args, "template")
+    guard BoardPDFTemplate(rawValue: template) != nil else { throw ToolFailure(message: "Invalid PDF template") }
+    let path = try string(args, "destination_path")
+    guard path.hasPrefix("/"), URL(fileURLWithPath: path).pathExtension.lowercased() == "pdf" else { throw ToolFailure(message: "destination_path must be an absolute PDF path") }
+    if let value = args["overwrite"], CFGetTypeID(value as CFTypeRef) != CFBooleanGetTypeID() { throw ToolFailure(message: "overwrite must be a boolean") }
+    let overwrite = args["overwrite"] as? Bool ?? false
+    if !overwrite && FileManager.default.fileExists(atPath: path) { throw ToolFailure(message: "Destination already exists; set overwrite to true to replace it") }
+    let folder = board.projectFilesPath ?? store.defaultProjectFilesDirectory(for: board.id).path
+    let request = PDFExportRequest(board: board, projectFolder: folder, template: template, destination: path, overwrite: overwrite)
+    let helper = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent("cothink-pdf")
+    guard FileManager.default.isExecutableFile(atPath: helper.path) else { throw ToolFailure(message: "PDF helper not found; rebuild the app bundle") }
+    let process = Process(), input = Pipe(), output = Pipe()
+    process.executableURL = helper; process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+    try process.run()
+    do { try input.fileHandleForWriting.write(contentsOf: encoder.encode(request)); try input.fileHandleForWriting.close() }
+    catch { process.terminate(); throw error }
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ToolFailure(message: "PDF helper returned an invalid response") }
+    guard process.terminationStatus == 0 else { throw ToolFailure(message: response["error"] as? String ?? "PDF export failed") }
+    return response
 }
 
 struct MCPToolContent {
@@ -357,6 +393,7 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         return try object(store.importBoard(decode(board, as: Board.self), actor: actor))
     case "edit_board": return try object(editBoard(args, store: store))
     case "add_project_file": return try object(addProjectFile(args, store: store))
+    case "export_board_pdf": return try exportBoardPDF(args, store: store)
     case "unlock_note":
         let id = try string(args, "board_id"), noteID = try string(args, "note_id"), revision = try integer(args, "expected_revision")
         var board = try store.get(id)

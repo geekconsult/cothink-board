@@ -2,6 +2,28 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testPDFTemplatesEscapeContentAndIncludeBoardContext() {
+        var board = Board(title: "Planning <script>", notes: [Note(id: "a", text: "Alpha & detail\nsecond line\nสวัสดี"), Note(id: "b", text: "Beta", x: 400)])
+        board.notes[0].assetIDs = ["asset"]
+        board.assets = [ProjectAsset(id: "asset", name: "diagram <draft>.png", relativePath: "diagram.png")]
+        var edge = Connection(from: "a", to: "b", direction: .twoWay, label: "relates & supports")
+        edge.route = .custom; edge.routePoints = [ConnectionPoint(x: 300, y: 300)]
+        board.connections = [edge]
+        let outputs = BoardPDFTemplate.allCases.map { BoardPDFHTML.render(board: board, template: $0, images: ["asset": "data:image/png;base64,YWJj"]) }
+        XCTAssertEqual(Set(outputs).count, 3)
+        for html in outputs {
+            XCTAssertTrue(html.contains("Planning &lt;script&gt;"))
+            XCTAssertFalse(html.contains("<script>"))
+            XCTAssertTrue(html.contains("Alpha &amp; detail\nsecond line"))
+            XCTAssertTrue(html.contains("สวัสดี"))
+            XCTAssertTrue(html.contains("relates &amp; supports"))
+            XCTAssertTrue(html.contains("diagram &lt;draft&gt;.png"))
+            XCTAssertTrue(html.contains("data:image/png;base64,YWJj"))
+            XCTAssertTrue(html.contains("L 300.00 300.00"))
+        }
+        let omitted = BoardPDFHTML.render(board: board, template: .minimal, images: ["asset": ""])
+        XCTAssertTrue(omitted.contains("Image unavailable or exceeds the export limit."))
+    }
     func testLockAndUnlockSingleNoteAndTransferBetweenGroups() throws {
         let store = try store()
         let original = try store.importBoard(Board(notes: [Note(id: "n", x: 50, y: 70)], groups: [BoardGroup(id: "a"), BoardGroup(id: "b")]), actor: "user")

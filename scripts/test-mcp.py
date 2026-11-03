@@ -48,12 +48,22 @@ r,e=call(113,'lock_note',{'board_id':lockboard['id'],'note_id':'n','group_id':'g
 _,unlocked=call(114,'unlock_note',{'board_id':lockboard['id'],'note_id':'n','expected_revision':2});assert unlocked['groups'][0]['memberIDs']==[]
 r,e=call(91,'delete_board',{'board_id':extra['id'],'expected_revision':1});assert r['isError'] and 'changed' in e.lower(),e
 _,deleted=call(92,'delete_board',{'board_id':extra['id'],'expected_revision':0});assert deleted['deleted']
+if os.environ.get('COTHINK_TEST_PDF') == '1':
+ for i,template in enumerate(('editorial','studio','minimal')):
+  pdf_path=os.path.join(home,f'agent-{template}.pdf')
+  pdf_args={'board_id':b5['id'],'expected_revision':b5['revision'],'destination_path':pdf_path,'template':template}
+  _,pdf=call(115+i,'export_board_pdf',pdf_args);assert pdf['path']==pdf_path and pdf['template']==template and Path(pdf_path).read_bytes().startswith(b'%PDF-')
+ r,e=call(116,'export_board_pdf',pdf_args);assert r['isError'] and 'exists' in e.lower()
+ r,e=call(117,'export_board_pdf',{**pdf_args,'expected_revision':0,'overwrite':True});assert r['isError'] and 'changed' in e.lower()
+ _,pdf=call(118,'export_board_pdf',{**pdf_args,'overwrite':True});assert pdf['path']==pdf_path and Path(pdf_path).read_bytes().startswith(b'%PDF-')
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
 r,e=call(10,'create_board',{'title':'forbidden'});assert r['isError'] and 'read-only' in e
 _,lists=call(12,'list_board_lists',{});assert lists[0]['title']=='Research'
 r,e=call(13,'delete_board_list',{'list_id':lists[0]['id'],'expected_revision':lists[0]['revision']});assert r['isError'] and 'read-only' in e
+if os.environ.get('COTHINK_TEST_PDF') == '1':
+ r,e=call(14,'export_board_pdf',pdf_args);assert r['isError'] and 'read-only' in e
 _,b=call(11,'get_board',{'board_id':b['id']});assert len(b['notes'])==1
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0
 temporary_home.cleanup()
