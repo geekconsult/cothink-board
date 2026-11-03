@@ -12,10 +12,12 @@ let package = Package(
     ],
     targets: [
         .target(name: "BoardCore"),
+        .target(name: "PiChatCore"),
         .target(name: "BoardPDFRendering", dependencies: ["BoardCore"]),
-        .executableTarget(name: "CoThinkApp", dependencies: ["BoardCore", "BoardPDFRendering"]),
+        .executableTarget(name: "CoThinkApp", dependencies: ["BoardCore", "BoardPDFRendering", "PiChatCore"]),
         .executableTarget(name: "CoThinkMCP", dependencies: ["BoardCore"]),
         .executableTarget(name: "CoThinkPDF", dependencies: ["BoardCore", "BoardPDFRendering"]),
-        .testTarget(name: "BoardCoreTests", dependencies: ["BoardCore"])
+        .testTarget(name: "BoardCoreTests", dependencies: ["BoardCore"]),
+        .testTarget(name: "PiChatCoreTests", dependencies: ["PiChatCore"])
     ]
 )

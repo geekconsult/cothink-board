@@ -25,6 +25,16 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 - **Portable board data:** export a board as JSON and import it later. Project file contents and list membership are stored separately; see [Data and backups](#data-and-backups).
 - **PDF reports:** preview and export a board using one of three HTML-based templates, with an overview, full note text, relationships, and supported attached images.
 
+## Agent chat with Pi
+
+Open the chat panel with the speech-bubble button in the toolbar. Choose the installed `pi` executable or enter its absolute path, then connect. CoThink starts Pi in RPC mode with its existing model and credentials, and gives it board-scoped MCP tools. Ask it to read the current board, arrange notes, or make changes. Pi can modify the selected board and access its registered attachments; changes appear as the app refreshes. A request may be sent to the model provider configured in Pi.
+
+Each board uses its own local Pi conversation in the CoThink data directory. Switching boards or hiding the panel stops the Pi subprocess; reopening resumes the saved conversation. CoThink does not modify Pi's configuration. It disables Pi's built-in tools, automatic extensions, skills and context files for this session, and loads only its bundled CoThink bridge. Some board tools can read project files or write exports when requested. The Stop button sends an abort request; an already-started board operation may still complete.
+
+Pi must support RPC mode and extension tools. The integration was checked with Pi 0.73.1. Configure an available model and credentials in Pi before connecting. If Pi is installed outside a standard bin directory, use Choose or paste its absolute path in chat settings. Chat is not available when Pi, its model, or the bundled MCP server cannot start.
+
+To run the isolated Pi integration test with a local mock model after `swift build`, set `PI_BIN` to a Pi executable and run `python3 scripts/test-pi-e2e.py`. No provider credentials or live model calls are used by that test.
+
 ## How it works
 
 ![Diagram showing a person using the macOS app and an agent using an MCP client and local server, both accessing the same board store and project files](docs/images/how-cothink-works.svg)

@@ -351,6 +351,7 @@ struct WorkspaceView: View {
     @ObservedObject var model: BoardViewModel
     @AppStorage("showBoardSidebar") private var showBoardSidebar = true
     @AppStorage("showInspector") private var showInspector = true
+    @AppStorage("showAgentChat") private var showAgentChat = false
     @AppStorage("appearanceMode") private var appearanceMode = "system"
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -398,6 +399,10 @@ struct WorkspaceView: View {
                     if showInspector {
                         InspectorView(model: model, board: board)
                             .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
+                    }
+                    if showAgentChat {
+                        PiChatView(board: board).id(board.id)
+                            .frame(minWidth: 270, idealWidth: 320, maxWidth: 460)
                     }
                 } else {
                     VStack(spacing: 10) {
@@ -621,6 +626,10 @@ struct WorkspaceView: View {
                 .disabled(board == nil)
             Button(action: openWallpaper) { Image(systemName: "photo.on.rectangle.angled") }
                 .help("Change board wallpaper").accessibilityLabel("Board wallpaper").disabled(board == nil)
+            Button { showAgentChat.toggle() } label: { Image(systemName: "bubble.left.and.text.bubble.right") }
+                .help(showAgentChat ? "Hide agent chat" : "Show agent chat")
+                .accessibilityLabel(showAgentChat ? "Hide agent chat" : "Show agent chat")
+                .disabled(board == nil)
             Button("MCP", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
                 .help("Connect an AI agent")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
