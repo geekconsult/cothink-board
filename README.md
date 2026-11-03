@@ -35,6 +35,10 @@ Connections give an agent explicit endpoints, arrow direction, and any label you
 
 ## Get started
 
+### Download for macOS
+
+Download the Apple silicon build from [GitHub Releases](https://github.com/geekconsult/cothink-board/releases), unzip it, and move **CoThink Board.app** to Applications. The release requires macOS 14 or later. It is unsigned and not notarized, so macOS may block the first launch; use Finder’s Open action and approve the app in Privacy & Security if prompted. Intel Macs require building from source.
+
 ### Requirements and build
 
 - macOS 14 or later
