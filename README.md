@@ -68,7 +68,7 @@ The left and right toolbar buttons show or hide the boards sidebar and inspector
 
 ### Organize boards into lists
 
-Choose the folder button in the sidebar to manage lists. Each list has a title, description, tags, flag, color, and a selection of boards. Choose a list, make changes, and select **Save**. Use the × button or Escape to close the manager. Deleting a list leaves its boards intact; deleting a board removes it from lists. Use the board settings button to edit a board's own name, tags, flag, and color.
+Choose **…** beside a list in the sidebar to select **Rename or Edit…** or **Delete List…**. You can also use the folder button in the sidebar to manage all lists. Select a list, change its name or other details, and choose **Save Changes**; **Delete List…** is available at the bottom of the editor. Each list has a title, description, tags, flag, color, and a selection of boards. Use the × button or Escape to close the manager. Deleting a list leaves its boards intact; deleting a board removes it from lists. Use the board settings button to edit a board's own name, tags, flag, and color.
 
 ### Export a PDF
 

@@ -125,16 +125,19 @@ final class BoardViewModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    func createList() {
-        do { _ = try store?.createList(title: "Untitled list"); try refresh() } catch { self.error = error.localizedDescription }
+    @discardableResult
+    func createList() -> BoardList? {
+        do { guard let store else { return nil }; let created = try store.createList(title: "Untitled list"); try refresh(); return created }
+        catch { self.error = error.localizedDescription; return nil }
     }
     func saveList(_ list: BoardList) -> Bool {
         do { _ = try store?.replaceList(list, expectedRevision: list.revision); try refresh(); return true }
         catch { self.error = error.localizedDescription; try? refresh(); return false }
     }
-    func deleteList(_ list: BoardList) {
-        do { try store?.deleteList(list.id, expectedRevision: list.revision); try refresh() }
-        catch { self.error = error.localizedDescription; try? refresh() }
+    @discardableResult
+    func deleteList(_ list: BoardList) -> Bool {
+        do { guard let store else { return false }; try store.deleteList(list.id, expectedRevision: list.revision); try refresh(); return true }
+        catch { self.error = error.localizedDescription; try? refresh(); return false }
     }
     func saveBoardSettings(_ updated: Board) -> Bool {
         do {
@@ -362,6 +365,9 @@ struct WorkspaceView: View {
     @State private var showingProjectFiles = false
     @State private var pdfExportBoard: Board?
     @State private var showingListManager = false
+    @State private var editingListID: String?
+    @State private var listToDelete: BoardList?
+    @State private var showingDeleteList = false
     @State private var showingBoardSettings = false
     @State private var draggingID: String?
     @State private var dragTranslation: CGSize = .zero
@@ -419,13 +425,16 @@ struct WorkspaceView: View {
         .confirmationDialog("Delete this board?", isPresented: $showingDeleteBoard) {
             Button("Delete Board", role: .destructive) { model.deleteBoard() }
         } message: { Text("This removes the board and its history from this Mac.") }
+        .confirmationDialog("Delete this list?", isPresented: $showingDeleteList) {
+            Button("Delete List", role: .destructive) { if let list = listToDelete { model.deleteList(list) }; listToDelete = nil }
+        } message: { Text("Boards in the list will remain available.") }
         .sheet(isPresented: $showingProjectFiles) {
             if let board = model.board {
                 ProjectFilesView(model: model, boardID: board.id)
                     .frame(minWidth: 640, minHeight: 420)
             }
         }
-        .sheet(isPresented: $showingListManager) { ListManagerView(model: model).frame(minWidth: 650, minHeight: 470) }
+        .sheet(isPresented: $showingListManager) { ListManagerView(model: model, initialListID: editingListID).frame(minWidth: 650, minHeight: 470) }
         .sheet(isPresented: $showingBoardSettings) { if let board = model.board { BoardSettingsView(model: model, board: board).frame(width: 450) } }
         .sheet(item: $pdfExportBoard) { board in
             PDFExportView(board: board, projectFolder: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? model.defaultProjectFilesDirectory(for: board.id))
@@ -450,7 +459,7 @@ struct WorkspaceView: View {
                     Text("Your boards").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { showingListManager = true } label: { Image(systemName: "folder.badge.gearshape") }.help("Manage lists")
+                Button { editingListID = nil; showingListManager = true } label: { Image(systemName: "folder.badge.gearshape") }.help("Create, rename, or delete lists")
                 Button(action: model.createBoard) { Image(systemName: "plus") }.help("New board")
             }.padding(18)
             TextField("Search boards and notes", text: $search)
@@ -461,7 +470,19 @@ struct WorkspaceView: View {
                         ForEach(model.boards.filter { list.boardIDs.contains($0.id) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })) }) { board in
                             boardSidebarLabel(board).tag(board.id)
                         }
-                    } header: { HStack { Label(list.title, systemImage: "folder"); if list.flagged { Image(systemName: "flag.fill") } }.foregroundStyle(Color(hex: list.color)).help(list.description) }
+                    } header: {
+                        HStack {
+                            Label(list.title, systemImage: "folder")
+                            if list.flagged { Image(systemName: "flag.fill") }
+                            Spacer()
+                            Menu {
+                                Button("Rename or Edit…") { editingListID = list.id; showingListManager = true }
+                                Button("Delete List…", role: .destructive) { listToDelete = list; showingDeleteList = true }
+                            } label: { Image(systemName: "ellipsis.circle") }
+                                .menuStyle(.borderlessButton).fixedSize().help("Edit or delete \(list.title)")
+                                .accessibilityLabel("Actions for \(list.title)")
+                        }.foregroundStyle(Color(hex: list.color)).help(list.description)
+                    }
                 }
                 Section("All boards") {
                 ForEach(model.boards.filter { board in
