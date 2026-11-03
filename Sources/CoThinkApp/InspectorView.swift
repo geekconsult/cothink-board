@@ -132,6 +132,17 @@ struct InspectorView: View {
                 Label("Locked in \(group.title)", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
                 Button("Unlock from group", systemImage: "lock.open") { model.unlockNote(note.id) }
                     .help("Remove this note from its group so it can move independently")
+            } else if !board.groups.isEmpty {
+                Label("Moves independently", systemImage: "lock.open").font(.caption).foregroundStyle(.secondary)
+            }
+            if !board.groups.isEmpty {
+                Menu {
+                    ForEach(board.groups) { group in
+                        Button(group.title) { model.lockNote(note.id, to: group.id) }
+                            .disabled(board.groupContaining(noteID: note.id)?.id == group.id)
+                    }
+                } label: { Label("Lock to group", systemImage: "lock") }
+                    .help("Choose a group to move together with this note")
             }
             geometryFields
             fontSizeControl

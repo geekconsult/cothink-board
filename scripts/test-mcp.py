@@ -41,6 +41,11 @@ _,ctx=call(102,'get_board_context',{'board_id':b['id']});assert ctx['lists'][0][
 r,e=call(103,'update_board_list',{'list':lst,'expected_revision':0});assert r['isError'] and 'changed' in e.lower()
 _,lists=call(104,'list_board_lists',{});assert lists[0]['boardIDs']==[b['id']]
 _,extra=call(90,'create_board',{'title':'Delete check'})
+_,lockboard=call(110,'create_board',{'title':'Lock check'})
+_,lockboard=call(111,'edit_board',{'board_id':lockboard['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'n','text':'Note','x':20,'y':30,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'groups','item':{'id':'g','title':'Group','x':0,'y':0,'width':300,'height':200,'color':'#ffffff'}}]})
+_,locked=call(112,'lock_note',{'board_id':lockboard['id'],'note_id':'n','group_id':'g','expected_revision':1});assert locked['groups'][0]['memberIDs']==['n'] and locked['notes'][0]['x']==20
+r,e=call(113,'lock_note',{'board_id':lockboard['id'],'note_id':'n','group_id':'g','expected_revision':1});assert r['isError']
+_,unlocked=call(114,'unlock_note',{'board_id':lockboard['id'],'note_id':'n','expected_revision':2});assert unlocked['groups'][0]['memberIDs']==[]
 r,e=call(91,'delete_board',{'board_id':extra['id'],'expected_revision':1});assert r['isError'] and 'changed' in e.lower(),e
 _,deleted=call(92,'delete_board',{'board_id':extra['id'],'expected_revision':0});assert deleted['deleted']
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()

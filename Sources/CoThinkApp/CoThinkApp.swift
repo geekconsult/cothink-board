@@ -233,6 +233,13 @@ final class BoardViewModel: ObservableObject {
         mutate { _ = $0.unlockNote(id: id) }
     }
 
+    func lockNote(_ id: String, to groupID: String) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let current = board, current.notes.contains(where: { $0.id == id }),
+              current.groups.contains(where: { $0.id == groupID }), current.groupContaining(noteID: id)?.id != groupID else { return }
+        mutate { _ = $0.lockNote(id: id, toGroup: groupID) }
+    }
+
     func beginConnection() {
         guard let id = selectedNoteID else { return }
         connectingFrom = connectingFrom == id ? nil : id

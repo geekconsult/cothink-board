@@ -57,6 +57,7 @@ let tools: [[String: Any]] = [
     tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
     tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
+    tool("lock_note", "Lock one note to a group so moving either moves them together. Transfers it from any previous group and keeps its current position. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "group_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "group_id", "expected_revision"]),
     tool("undo", "Undo the latest board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("redo", "Redo the latest undone board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"])
 ]
@@ -362,6 +363,14 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         guard board.revision == revision else { throw BoardError.conflict }
         guard board.notes.contains(where: { $0.id == noteID }) else { throw ToolFailure(message: "Note not found") }
         guard board.unlockNote(id: noteID) else { return try object(board) }
+        return try object(store.replace(board, expectedRevision: revision, actor: actor))
+    case "lock_note":
+        let id = try string(args, "board_id"), noteID = try string(args, "note_id"), groupID = try string(args, "group_id"), revision = try integer(args, "expected_revision")
+        var board = try store.get(id)
+        guard board.revision == revision else { throw BoardError.conflict }
+        guard board.notes.contains(where: { $0.id == noteID }) else { throw ToolFailure(message: "Note not found") }
+        guard board.groups.contains(where: { $0.id == groupID }) else { throw ToolFailure(message: "Group not found") }
+        guard board.lockNote(id: noteID, toGroup: groupID) else { return try object(board) }
         return try object(store.replace(board, expectedRevision: revision, actor: actor))
     case "undo": return try object(store.undo(string(args, "board_id"), actor: actor, expectedRevision: integer(args, "expected_revision")))
     case "redo": return try object(store.redo(string(args, "board_id"), actor: actor, expectedRevision: integer(args, "expected_revision")))

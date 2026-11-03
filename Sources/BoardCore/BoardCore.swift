@@ -132,6 +132,16 @@ public extension Board {
     var projectAssets: [ProjectAsset] { assets ?? [] }
 
     @discardableResult
+    mutating func lockNote(id: String, toGroup groupID: String) -> Bool {
+        guard notes.contains(where: { $0.id == id }), let target = groups.firstIndex(where: { $0.id == groupID }) else { return false }
+        let memberships = groups.filter { $0.memberIDs?.contains(id) == true }
+        if memberships.count == 1 && memberships[0].id == groupID { return false }
+        for i in groups.indices { groups[i].memberIDs?.removeAll { $0 == id } }
+        groups[target].memberIDs = (groups[target].memberIDs ?? []) + [id]
+        return true
+    }
+
+    @discardableResult
     mutating func unlockNote(id: String) -> Bool {
         var changed = false
         for i in groups.indices {

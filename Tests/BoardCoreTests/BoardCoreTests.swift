@@ -2,6 +2,27 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testLockAndUnlockSingleNoteAndTransferBetweenGroups() throws {
+        let store = try store()
+        let original = try store.importBoard(Board(notes: [Note(id: "n", x: 50, y: 70)], groups: [BoardGroup(id: "a"), BoardGroup(id: "b")]), actor: "user")
+        var board = original
+        XCTAssertTrue(board.lockNote(id: "n", toGroup: "a"))
+        XCTAssertFalse(board.lockNote(id: "n", toGroup: "a"))
+        XCTAssertFalse(board.lockNote(id: "missing", toGroup: "a"))
+        XCTAssertTrue(board.lockNote(id: "n", toGroup: "b"))
+        XCTAssertEqual(board.groups[0].memberIDs ?? [], [])
+        XCTAssertEqual(board.groups[1].memberIDs, ["n"])
+        XCTAssertEqual(board.notes[0].x, 50)
+        let saved = try store.replace(board, expectedRevision: original.revision, actor: "user")
+        XCTAssertTrue(board.moveGroup(id: "b", dx: 20, dy: 10))
+        XCTAssertEqual(board.notes[0].x, 70)
+        XCTAssertTrue(board.unlockNote(id: "n"))
+        XCTAssertTrue(board.moveGroup(id: "b", dx: 20, dy: 10))
+        XCTAssertEqual(board.notes[0].x, 70)
+        let unlocked = try store.replace(board, expectedRevision: saved.revision, actor: "user")
+        let undone = try store.undo(unlocked.id, actor: "user", expectedRevision: unlocked.revision)
+        XCTAssertEqual(undone.groupContaining(noteID: "n")?.id, "b")
+    }
     func testConnectionRoutesAndFontSizesPersistAndValidate() throws {
         let store = try store()
         var board = Board(notes: [Note(id: "a"), Note(id: "b", x: 500)])
