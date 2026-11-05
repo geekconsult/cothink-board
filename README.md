@@ -200,9 +200,12 @@ For example, to label and route an existing connection, an MCP client can call `
 | Work with files and PDF | `add_project_file`, `read_project_file`, `read_note_image`, `export_board_pdf` |
 | Set the wallpaper | `set_board_wallpaper` |
 | Lock and unlock a note | `lock_note`, `unlock_note` |
+| Build and tidy a mindmap tree | `add_child_note`, `set_note_parent`, `tidy_tree_layout` |
 | Travel shared history | `undo`, `redo` |
 
 Existing-board mutations require `expected_revision`; list updates and deletion use their own list revision. `edit_board` supports ordered `rename`, `add`, `update`, and `delete` operations across notes, groups, connections, and assets. The server publishes input schemas and field details through `tools/list`. `lock_note` transfers a note from its previous group if necessary, without changing its position.
+
+A note can carry a `parentID` naming its tree parent: mindmap parent-child links are separate from connections, so a node can have both tree edges and free arrows. Grow trees with `add_child_note` (the server places the child right of its parent, below existing children), restructure with `set_note_parent` (null detaches; self-parents and cycles are refused), and tidy with `tidy_tree_layout` (optional `root_id` scopes the pass to one tree; the root never moves and notes without tree links never move). `get_board_context` reports `parent_note_id` and `child_note_ids` per note. Deleting a parent promotes its children to the nearest surviving ancestor.
 
 `export_board_pdf` writes a PDF snapshot to an absolute `destination_path`. Supply `board_id`, `expected_revision`, and a `template` of `editorial`, `studio`, or `minimal`; set `overwrite` to `true` only when replacing an existing file. The tool requires a macOS graphical session and the bundled `cothink-pdf` helper. It writes to the local filesystem and is disabled in MCP read-only mode.
 
@@ -233,6 +236,9 @@ By default, the app stores its database and history in `~/Library/Application Su
 | New note | ⌘N |
 | New connected note to the right of the selected note | Tab |
 | New note below the selected note | Return |
+| New child note (mindmap) from a tree-linked selected note | Tab |
+| New sibling note (mindmap) from a tree-linked selected note | Return |
+| Tidy mindmap tree layout | ⇧⌘T |
 | Copy / paste selected board objects | ⌘C / ⌘V |
 | New board | ⇧⌘N |
 | Group selection or draw a group | ⇧⌘G |
@@ -263,7 +269,8 @@ The canvas grows right and down from its top-left origin. Sidebar search matches
 
 ### Navigating and selecting
 
-- Shift-click notes to add or remove them from a selection; drag the selection to move it together. Dragging a locked note also moves its group and other locked members. Drag on empty canvas to select notes within a rectangle. Delete removes the selected notes.
+- Shift-click notes to add or remove them from a selection; drag the selection to move it together. Dragging a locked note also moves its group and other locked members, and dragging a note also moves its mindmap subtree; group and subtree moves compose. Drag on empty canvas to select notes within a rectangle. Delete removes the selected notes, and deleting a note promotes its tree children to the nearest surviving ancestor.
+- Any note can parent child notes (a mindmap tree). Tab grows a child from a tree-linked note (a plain note keeps the connected-note-to-the-right behavior), Return adds a sibling from a tree-linked note, and the note's context menu offers Add Child Note, Add Sibling Note, Select Subtree, and Remove from Tree. Tree edges draw as accent arrows between parent and child and track drags. ⇧⌘T tidies every mindmap tree into a right-growing layout without moving the roots. The inspector shows a note's parent with a Detach button.
 - Notes inside a group show a lock control. Unlock a note to move it independently; to lock it again, place its center inside a group and click the open lock. In overlapping groups the topmost group is used.
 - Use the overview in the lower-right corner to see the board and click or drag to pan.
 
