@@ -110,6 +110,9 @@ public enum BoardPDFHTML {
 
     public static func svg(board: Board, images: [String: String]) -> String {
         let notes = Dictionary(board.notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // The visual overview matches the canvas: subtrees under a folded note and
+        // edges touching a hidden note are excluded. The text sections below stay complete.
+        let hidden = board.hiddenNoteIDs()
         let points = board.connections.flatMap { edge -> [ConnectionPoint] in
             guard let a = notes[edge.from], let b = notes[edge.to] else { return [] }
             return edge.controlPoints(from: a, to: b)
@@ -134,6 +137,7 @@ public enum BoardPDFHTML {
         // at the child end, under the connection layer, matching the canvas z-order.
         let treeEdges = board.notes.compactMap { child -> String? in
             guard let parentID = child.parentID, let parent = notes[parentID] else { return nil }
+            guard !hidden.contains(child.id) && !hidden.contains(parentID) else { return nil }
             let s = ConnectionPoint(x: parent.x + parent.width, y: parent.y + parent.height / 2)
             let e = ConnectionPoint(x: child.x, y: child.y + child.height / 2)
             let midX = (s.x + e.x) / 2
@@ -147,6 +151,7 @@ public enum BoardPDFHTML {
         }.joined()
         let edges = board.connections.compactMap { edge -> String? in
             guard let a = notes[edge.from], let b = notes[edge.to] else { return nil }
+            guard !hidden.contains(edge.from) && !hidden.contains(edge.to) else { return nil }
             let start = ConnectionPoint(x: a.x+a.width/2, y: a.y+a.height/2), end = ConnectionPoint(x: b.x+b.width/2, y: b.y+b.height/2)
             let cp = edge.controlPoints(from: a, to: b)
             func boundary(_ c: ConnectionPoint, _ toward: ConnectionPoint, _ n: Note) -> ConnectionPoint {
@@ -173,12 +178,13 @@ public enum BoardPDFHTML {
             let label = edge.label.map { "<text x=\"\(number(labelPoint.x))\" y=\"\(number(labelPoint.y-5))\" text-anchor=\"middle\" font-size=\"\(number(edge.fontSize ?? 11))\" fill=\"#39414d\">\(escape(short($0)))</text>" } ?? ""
             return "<path d=\"\(d)\" fill=\"none\" stroke=\"\(color(edge.strokeColor, fallback: "#737d8e"))\" stroke-width=\"\(number(edge.strokeWidth ?? 1.5))\"\(dash)/>\(arrows)\(label)"
         }.joined()
-        let cards = board.notes.enumerated().map { index, n in
+        let cards = board.notes.filter { !hidden.contains($0.id) }.enumerated().map { index, n in
             let text = escape(String(short(n.text).prefix(40)))
             let fill = color(n.color, fallback: "#FFF1B8")
             let imageSource = (["legacy:\(n.id)"] + (n.assetIDs ?? [])).compactMap { images[$0] }.first { $0.hasPrefix("data:image/") }
             let image = imageSource.map { "<image href=\"\(escape($0))\" x=\"\(number(n.x+10))\" y=\"\(number(n.y+n.height*0.45))\" width=\"\(number(max(0,n.width-20)))\" height=\"\(number(max(0,n.height*0.45)))\" preserveAspectRatio=\"xMidYMid meet\"/>" } ?? ""
-            return "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath><rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"9\" fill=\"\(fill)\" stroke=\"\(color(n.strokeColor, fallback: "#939aa4"))\"/><text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(min(n.fontSize ?? 15, 22)))\" font-weight=\"600\">\(text)</text>\(image)"
+            let foldBadge = n.collapsed == true ? "<rect x=\"\(number(n.x+n.width-40))\" y=\"\(number(n.y+n.height-25))\" width=\"32\" height=\"18\" rx=\"9\" fill=\"#7A8BA8\"/><text x=\"\(number(n.x+n.width-24))\" y=\"\(number(n.y+n.height-12))\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"700\" fill=\"#ffffff\">+\(board.children(of: n.id).count)</text>" : ""
+            return "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath><rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"9\" fill=\"\(fill)\" stroke=\"\(color(n.strokeColor, fallback: "#939aa4"))\"/><text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(min(n.fontSize ?? 15, 22)))\" font-weight=\"600\">\(text)</text>\(image)\(foldBadge)"
         }.joined()
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(treeEdges)\(edges)\(cards)</g></svg>"
     }

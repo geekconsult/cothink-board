@@ -548,4 +548,96 @@ final class BoardCoreTests: XCTestCase {
         board.tidySubtree(rootID: "missing")
         XCTAssertEqual(board, quiet)
     }
+
+    // MARK: Fold/collapse data layer (wave 2)
+
+    func testToggleFoldHidesSubtreeAndNestedFoldsCompose() {
+        func family() -> Board {
+            var board = Board(notes: [Note(id: "r"), Note(id: "a"), Note(id: "b"), Note(id: "c"), Note(id: "a1"), Note(id: "a2")])
+            board.notes[1].parentID = "r"
+            board.notes[2].parentID = "r"
+            board.notes[3].parentID = "r"
+            board.notes[4].parentID = "a"
+            board.notes[5].parentID = "a1"
+            return board
+        }
+        var board = family()
+        XCTAssertTrue(board.hiddenNoteIDs().isEmpty)
+        XCTAssertTrue(board.toggleFold(noteID: "r"))
+        XCTAssertEqual(board.hiddenNoteIDs(), ["a", "b", "c", "a1", "a2"])
+        XCTAssertTrue(board.toggleFold(noteID: "r"))
+        XCTAssertTrue(board.hiddenNoteIDs().isEmpty)
+        XCTAssertTrue(board.toggleFold(noteID: "a"))
+        XCTAssertEqual(board.hiddenNoteIDs(), ["a1", "a2"])
+        XCTAssertTrue(board.toggleFold(noteID: "r"))
+        XCTAssertEqual(board.hiddenNoteIDs(), ["a", "b", "c", "a1", "a2"])
+        XCTAssertTrue(board.toggleFold(noteID: "r"))
+        XCTAssertEqual(board.hiddenNoteIDs(), ["a1", "a2"])
+        XCTAssertEqual(board.notes.first { $0.id == "a" }?.collapsed, true)
+        XCTAssertNil(board.notes.first { $0.id == "r" }?.collapsed)
+        let before = board
+        XCTAssertFalse(board.toggleFold(noteID: "a2"))
+        XCTAssertFalse(board.toggleFold(noteID: "ghost"))
+        XCTAssertEqual(board, before)
+    }
+
+    func testCollapsedRoundTripsAndLegacyJSONDecodesNil() throws {
+        let json = """
+        {"version":1,"id":"old","title":"Old","revision":0,"notes":[{"id":"n1","text":"Note","x":10,"y":20,"width":200,"height":100,"color":"#FFFFFF"},{"id":"n2","text":"Other","x":400,"y":20,"width":100,"height":60,"color":"#FFFFFF"}],"connections":[{"id":"c","from":"n1","to":"n2","arrow":true}],"groups":[]}
+        """
+        let legacy = try JSONDecoder().decode(Board.self, from: Data(json.utf8))
+        XCTAssertNil(legacy.notes[0].collapsed)
+        XCTAssertNil(legacy.notes[1].collapsed)
+        var board = Board(notes: [Note(id: "n1", text: "Root"), Note(id: "n2"), Note(id: "n3")])
+        board.notes[1].parentID = "n1"
+        board.notes[2].parentID = "n1"
+        board.notes[2].collapsed = false
+        XCTAssertTrue(board.toggleFold(noteID: "n1"))
+        let store = try store()
+        let saved = try store.importBoard(board, actor: "test")
+        let reloaded = try store.get(saved.id)
+        XCTAssertEqual(reloaded, saved)
+        XCTAssertEqual(reloaded.notes.first { $0.id == "n1" }?.collapsed, true)
+        XCTAssertNil(reloaded.notes.first { $0.id == "n2" }?.collapsed)
+        XCTAssertEqual(reloaded.notes.first { $0.id == "n3" }?.collapsed, false)
+        let encoded = try JSONEncoder().encode(reloaded)
+        XCTAssertEqual(try JSONDecoder().decode(Board.self, from: encoded), reloaded)
+        XCTAssertTrue(String(data: encoded, encoding: .utf8)!.contains("\"collapsed\""))
+    }
+
+    func testDeleteFoldedParentPromotesVisibleChildren() {
+        var board = Board(notes: [Note(id: "r"), Note(id: "a"), Note(id: "b"), Note(id: "c")])
+        board.notes[1].parentID = "r"
+        board.notes[2].parentID = "r"
+        board.notes[3].parentID = "r"
+        XCTAssertTrue(board.toggleFold(noteID: "r"))
+        XCTAssertEqual(board.hiddenNoteIDs(), ["a", "b", "c"])
+        board.deleteNotes(["r"])
+        XCTAssertEqual(board.notes.map(\.id), ["a", "b", "c"])
+        XCTAssertTrue(board.notes.allSatisfy { $0.parentID == nil && $0.collapsed == nil })
+        XCTAssertTrue(board.hiddenNoteIDs().isEmpty)
+    }
+
+    func testSVGOverviewHidesFoldedSubtree() {
+        func family(folded: Bool) -> Board {
+            var board = Board(notes: [
+                Note(id: "r", text: "Root card", x: 0, y: 0, width: 200, height: 80),
+                Note(id: "a", text: "Hidden child card", x: 400, y: 0, width: 200, height: 80),
+                Note(id: "v", text: "Visible note card", x: 0, y: 300, width: 200, height: 80),
+            ])
+            board.notes[1].parentID = "r"
+            board.connections = [Connection(id: "va", from: "v", to: "a", label: "V to A link")]
+            if folded { XCTAssertTrue(board.toggleFold(noteID: "r")) }
+            return board
+        }
+        let unfolded = BoardPDFHTML.svg(board: family(folded: false), images: [:])
+        XCTAssertTrue(unfolded.contains("Hidden child card"))
+        XCTAssertTrue(unfolded.contains("V to A link"))
+        XCTAssertTrue(unfolded.contains("M 200.00 40.00 L 300.00 40.00"))
+        let folded = BoardPDFHTML.svg(board: family(folded: true), images: [:])
+        XCTAssertFalse(folded.contains("Hidden child card"))
+        XCTAssertTrue(folded.contains("Visible note card"))
+        XCTAssertFalse(folded.contains("V to A link"))
+        XCTAssertFalse(folded.contains("M 200.00 40.00 L 300.00 40.00"))
+    }
 }

@@ -62,11 +62,13 @@ public struct Note: Codable, Identifiable, Equatable {
     public var imagePath: String?
     public var assetIDs: [String]?
     public var parentID: String?
-    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil) {
+    public var collapsed: Bool?
+    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil, collapsed: Bool? = nil) {
         self.id = id; self.text = text; self.x = x; self.y = y; self.width = width; self.height = height; self.color = color
         self.imagePath = imagePath
         self.assetIDs = []
         self.parentID = parentID
+        self.collapsed = collapsed
     }
 }
 public struct ProjectAsset: Codable, Identifiable, Equatable {
@@ -408,6 +410,26 @@ public extension Board {
             guard let spot = layouts[notes[index].id] else { continue }
             notes[index].x = spot.x; notes[index].y = spot.y
         }
+    }
+
+    // Canvas visibility: a note is hidden iff any strict ancestor is folded. The
+    // single definition used by the app, the SVG overview, and tests.
+    func hiddenNoteIDs() -> Set<String> {
+        var hidden: Set<String> = []
+        for note in notes where note.collapsed == true {
+            hidden.formUnion(descendantIDs(of: note.id))
+        }
+        return hidden
+    }
+
+    // Folded state only exists on notes with direct children; a leaf fold is dead
+    // state and is refused. Unfolded notes store nil, keeping JSON clean.
+    @discardableResult
+    mutating func toggleFold(noteID: String) -> Bool {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }),
+              notes.contains(where: { $0.parentID == noteID }) else { return false }
+        notes[index].collapsed = notes[index].collapsed == true ? nil : true
+        return true
     }
 }
 
