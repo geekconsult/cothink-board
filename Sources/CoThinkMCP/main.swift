@@ -56,11 +56,14 @@ let tools: [[String: Any]] = [
     tool("delete_board", "Delete a board and its history if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("replace_board", "Atomically replace an existing complete board. Provide its last observed revision to prevent overwriting concurrent edits.", ["board": objectSchema, "expected_revision": integerSchema], ["board", "expected_revision"]),
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
-    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
+    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Notes may have parentID, a tree parent note id; null clears it. Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections and promotes its tree children to the nearest surviving ancestor.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
     tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
     tool("export_board_pdf", "Export a snapshot of a board to an absolute local PDF path using the same HTML templates as the app. template is editorial, studio, or minimal. Set overwrite to true to replace an existing file. Requires a macOS graphical session and the bundled cothink-pdf helper. This writes to the local filesystem and is disabled in read-only mode.", ["board_id": stringSchema, "expected_revision": integerSchema, "destination_path": stringSchema, "template": ["type": "string", "enum": ["editorial", "studio", "minimal"]], "overwrite": ["type": "boolean"]], ["board_id", "expected_revision", "destination_path", "template"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
     tool("lock_note", "Lock one note to a group so moving either moves them together. Transfers it from any previous group and keeps its current position. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "group_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "group_id", "expected_revision"]),
+    tool("add_child_note", "Add a new note as a tree child of an existing note. The note id is assigned by the server; the note is created with default size (200x100), optional text, and a stacking position to the right of its parent (parent x + width + 60, below the last existing child or aligned with the parent). It is linked by parentID, not by a connection edge, and no existing note moves. Returns the updated board; read the tree with get_board_context. This is an undoable board edit.", ["board_id": stringSchema, "parent_id": stringSchema, "text": stringSchema, "expected_revision": integerSchema], ["board_id", "parent_id", "expected_revision"]),
+    tool("set_note_parent", "Set or clear a note's tree parent (a parentID link, not a connection edge). parent_id is a note id to attach under, or null to detach the note as a tree root. Refuses self-parent and attaching a note under its own descendant, so the parent graph stays a forest. Returns the updated board. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "parent_id": ["type": ["string", "null"]], "expected_revision": integerSchema], ["board_id", "note_id", "parent_id", "expected_revision"]),
+    tool("tidy_tree_layout", "Apply mindmap tree layout: each child stacks to the right of its parent (parent x + width + 60), centered over its own subtree slot, siblings ordered by current y then array order. With root_id, tidy only that note's subtree; omit root_id to tidy every tree root. The root keeps its position and notes without tree links never move. Returns the updated board. This is an undoable board edit.", ["board_id": stringSchema, "root_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("undo", "Undo the latest board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("redo", "Redo the latest undone board change if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"])
 ]
@@ -83,11 +86,13 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
         switch action {
         case "add":
             guard let item = operation["item"] as? [String: Any], let itemID = item["id"] as? String, !itemID.isEmpty else { throw ToolFailure(message: "add requires an item with a nonempty id") }
+            if collection == "notes", item["parent_id"] != nil || item["parentId"] != nil { throw ToolFailure(message: "Invalid key \(item["parent_id"] != nil ? "parent_id" : "parentId") for a note; the correct key is parentID") }
             guard !items.contains(where: { ($0["id"] as? String) == itemID }) else { throw ToolFailure(message: "Item already exists: \(itemID)") }
             items.append(item)
         case "update":
             let itemID = try string(operation, "id")
             guard let index = items.firstIndex(where: { ($0["id"] as? String) == itemID }), var fields = operation["fields"] as? [String: Any], fields["id"] == nil else { throw ToolFailure(message: "update requires an existing id and fields without id") }
+            if collection == "notes", fields["parent_id"] != nil || fields["parentId"] != nil { throw ToolFailure(message: "Invalid key \(fields["parent_id"] != nil ? "parent_id" : "parentId") for a note; the correct key is parentID") }
             if (collection == "groups" || collection == "notes"), fields["x"] != nil || fields["y"] != nil {
                 for key in ["x", "y"] {
                     if let value = fields[key] {
@@ -110,15 +115,14 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
         case "delete":
             let itemID = try string(operation, "id")
             guard let index = items.firstIndex(where: { ($0["id"] as? String) == itemID }) else { throw ToolFailure(message: "Item does not exist: \(itemID)") }
-            items.remove(at: index)
-            if collection == "notes", let connections = board["connections"] as? [[String: Any]] {
-                board["connections"] = connections.filter { ($0["from"] as? String) != itemID && ($0["to"] as? String) != itemID }
-                if var groups = board["groups"] as? [[String: Any]] {
-                    for i in groups.indices {
-                        if let members = groups[i]["memberIDs"] as? [String] { groups[i]["memberIDs"] = members.filter { $0 != itemID } }
-                    }
-                    board["groups"] = groups
-                }
+            if collection == "notes" {
+                var typed = try decode(board, as: Board.self)
+                typed.deleteNotes([itemID])
+                guard let deleted = try object(typed) as? [String: Any], let survivors = deleted["notes"] as? [[String: Any]] else { throw ToolFailure(message: "Could not delete note") }
+                board = deleted
+                items = survivors
+            } else {
+                items.remove(at: index)
             }
             if collection == "assets", var notes = board["notes"] as? [[String: Any]] {
                 for i in notes.indices {
@@ -252,6 +256,8 @@ func boardContext(_ board: Board) -> [String: Any] {
             "position": ["x": note.x, "y": note.y, "width": note.width, "height": note.height],
             "group_ids": groups.map(\.id),
             "group_titles": groups.map(\.title),
+            "parent_note_id": note.parentID as Any? ?? NSNull(),
+            "child_note_ids": board.children(of: note.id).map(\.id),
             "connection_ids": connected,
             "attachments": attachments,
             "has_legacy_image": note.imagePath != nil
@@ -438,6 +444,37 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
         guard board.notes.contains(where: { $0.id == noteID }) else { throw ToolFailure(message: "Note not found") }
         guard board.groups.contains(where: { $0.id == groupID }) else { throw ToolFailure(message: "Group not found") }
         guard board.lockNote(id: noteID, toGroup: groupID) else { return try object(board) }
+        return try object(store.replace(board, expectedRevision: revision, actor: actor))
+    case "add_child_note":
+        let id = try string(args, "board_id"), parentID = try string(args, "parent_id"), revision = try integer(args, "expected_revision")
+        var board = try store.get(id)
+        guard board.revision == revision else { throw ToolFailure(message: "Revision conflict. Read the board again before editing.") }
+        guard let parent = board.notes.first(where: { $0.id == parentID }) else { throw ToolFailure(message: "Note not found: \(parentID)") }
+        let child = Note(text: args["text"] as? String ?? "", x: parent.x + parent.width + 60,
+                         y: board.children(of: parentID).last.map { $0.y + $0.height + 24 } ?? parent.y, parentID: parentID)
+        board.notes.append(child)
+        return try object(store.replace(board, expectedRevision: revision, actor: actor))
+    case "set_note_parent":
+        let id = try string(args, "board_id"), noteID = try string(args, "note_id"), revision = try integer(args, "expected_revision")
+        var board = try store.get(id)
+        guard board.revision == revision else { throw ToolFailure(message: "Revision conflict. Read the board again before editing.") }
+        guard board.notes.contains(where: { $0.id == noteID }) else { throw ToolFailure(message: "Note not found: \(noteID)") }
+        var parentID: String?
+        if let value = args["parent_id"], !(value is NSNull) {
+            guard let parent = value as? String else { throw ToolFailure(message: "parent_id must be a note id or null") }
+            parentID = parent
+        }
+        if let parentID, !board.notes.contains(where: { $0.id == parentID }) { throw ToolFailure(message: "Note not found: \(parentID)") }
+        do { try board.setNoteParent(noteID, to: parentID) }
+        catch let error as BoardError { throw ToolFailure(message: error.localizedDescription) }
+        return try object(store.replace(board, expectedRevision: revision, actor: actor))
+    case "tidy_tree_layout":
+        let id = try string(args, "board_id"), revision = try integer(args, "expected_revision")
+        var board = try store.get(id)
+        guard board.revision == revision else { throw ToolFailure(message: "Revision conflict. Read the board again before editing.") }
+        let rootID = args["root_id"] as? String
+        if let rootID, !board.notes.contains(where: { $0.id == rootID }) { throw ToolFailure(message: "Note not found: \(rootID)") }
+        board.tidySubtree(rootID: rootID)
         return try object(store.replace(board, expectedRevision: revision, actor: actor))
     case "undo": return try object(store.undo(string(args, "board_id"), actor: actor, expectedRevision: integer(args, "expected_revision")))
     case "redo": return try object(store.redo(string(args, "board_id"), actor: actor, expectedRevision: integer(args, "expected_revision")))

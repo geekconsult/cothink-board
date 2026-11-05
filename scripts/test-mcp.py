@@ -81,6 +81,60 @@ if os.environ.get('COTHINK_TEST_PDF') == '1':
  if shutil.which('pdfimages'):
   image_report=subprocess.check_output(['pdfimages','-list',wallpaper_pdf],text=True)
   assert any(len(row.split())>2 and row.split()[2]=='image' for row in image_report.splitlines()),image_report
+mindnames=[t['name'] for t in req(200,'tools/list')['tools']]
+assert {'add_child_note','set_note_parent','tidy_tree_layout'} <= set(mindnames),mindnames
+_,treeboard=call(201,'create_board',{'title':'Mindmap'})
+_,treeboard=call(202,'edit_board',{'board_id':treeboard['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'a','text':'Root','x':0,'y':0,'width':100,'height':60,'color':'#ffffff'}}]})
+assert treeboard['revision']==1
+r,c1board=call(203,'add_child_note',{'board_id':treeboard['id'],'parent_id':'a','text':'First child','expected_revision':1})
+assert not r.get('isError')
+c1=[n for n in c1board['notes'] if n.get('parentID')=='a'][0]
+assert c1board['revision']==2 and c1['x']==160 and c1['y']==0 and c1['width']==200 and c1['height']==100 and c1['text']=='First child'
+_,treeread=call(204,'get_board',{'board_id':treeboard['id']});assert [n for n in treeread['notes'] if n['id']==c1['id']][0].get('parentID')=='a'
+_,treecontext=call(205,'get_board_context',{'board_id':treeboard['id']})
+assert [n for n in treecontext['notes'] if n['id']=='a'][0]['child_note_ids']==[c1['id']]
+assert [n for n in treecontext['notes'] if n['id']==c1['id']][0]['parent_note_id']=='a'
+r,e=call(206,'add_child_note',{'board_id':treeboard['id'],'parent_id':'a','expected_revision':1});assert r['isError'] and 'conflict' in e.lower(),e
+r,e=call(207,'add_child_note',{'board_id':treeboard['id'],'parent_id':'zzz','expected_revision':2});assert r['isError'] and 'not found' in e.lower(),e
+_,c2board=call(208,'add_child_note',{'board_id':treeboard['id'],'parent_id':'a','text':'Second child','expected_revision':2})
+c2=[n for n in c2board['notes'] if n.get('parentID')=='a' and n['id']!=c1['id']][0]
+assert c2board['revision']==3 and c2['x']==160 and c2['y']==124
+r,detached=call(209,'set_note_parent',{'board_id':treeboard['id'],'note_id':c2['id'],'parent_id':None,'expected_revision':3})
+assert detached['revision']==4 and [n for n in detached['notes'] if n['id']==c2['id']][0].get('parentID') is None
+r,reattached=call(210,'set_note_parent',{'board_id':treeboard['id'],'note_id':c2['id'],'parent_id':c1['id'],'expected_revision':4})
+assert reattached['revision']==5 and [n for n in reattached['notes'] if n['id']==c2['id']][0].get('parentID')==c1['id']
+_,deepcontext=call(211,'get_board_context',{'board_id':treeboard['id']})
+assert [n for n in deepcontext['notes'] if n['id']=='a'][0]['child_note_ids']==[c1['id']]
+assert [n for n in deepcontext['notes'] if n['id']==c1['id']][0]['child_note_ids']==[c2['id']]
+assert [n for n in deepcontext['notes'] if n['id']==c2['id']][0]['parent_note_id']==c1['id']
+r,e=call(212,'set_note_parent',{'board_id':treeboard['id'],'note_id':'a','parent_id':c2['id'],'expected_revision':5});assert r['isError'] and 'cycle' in e.lower(),e
+_,still=call(213,'get_board',{'board_id':treeboard['id']});assert still['revision']==5
+r,e=call(214,'set_note_parent',{'board_id':treeboard['id'],'note_id':c2['id'],'parent_id':c1['id'],'expected_revision':4});assert r['isError'] and 'conflict' in e.lower(),e
+_,withd=call(220,'edit_board',{'board_id':treeboard['id'],'expected_revision':5,'operations':[{'action':'add','collection':'notes','item':{'id':'d','text':'Via edit','x':400,'y':0,'width':100,'height':60,'color':'#ffffff','parentID':'a'}}]})
+assert withd['revision']==6 and [n for n in withd['notes'] if n['id']=='d'][0].get('parentID')=='a'
+_,cleared=call(221,'edit_board',{'board_id':treeboard['id'],'expected_revision':6,'operations':[{'action':'update','collection':'notes','id':'d','fields':{'parentID':None}}]})
+assert cleared['revision']==7 and [n for n in cleared['notes'] if n['id']=='d'][0].get('parentID') is None
+r,e=call(222,'edit_board',{'board_id':treeboard['id'],'expected_revision':7,'operations':[{'action':'add','collection':'notes','item':{'id':'d2','text':'x','x':0,'y':0,'width':10,'height':10,'color':'#ffffff','parent_id':'a'}}]});assert r['isError'] and 'parentID' in e,e
+r,e=call(223,'edit_board',{'board_id':treeboard['id'],'expected_revision':7,'operations':[{'action':'update','collection':'notes','id':'d','fields':{'parentId':'a'}}]});assert r['isError'] and 'parentID' in e,e
+_,unchanged=call(224,'get_board',{'board_id':treeboard['id']});assert unchanged['revision']==7
+_,casc=call(230,'create_board',{'title':'Cascade'})
+_,casc=call(231,'edit_board',{'board_id':casc['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'gp','text':'Grand','x':0,'y':0,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'notes','item':{'id':'p','text':'Parent','x':160,'y':0,'width':100,'height':60,'color':'#ffffff','parentID':'gp'}},{'action':'add','collection':'notes','item':{'id':'k','text':'Kid','x':320,'y':0,'width':100,'height':60,'color':'#ffffff','parentID':'p'}},{'action':'add','collection':'connections','item':{'id':'e','from':'p','to':'k','arrow':True}},{'action':'add','collection':'groups','item':{'id':'gg','title':'G','x':0,'y':0,'width':300,'height':200,'color':'#ffffff','memberIDs':['p','k']}}]})
+assert casc['revision']==1
+_,promoted=call(232,'edit_board',{'board_id':casc['id'],'expected_revision':1,'operations':[{'action':'delete','collection':'notes','id':'p'}]})
+assert promoted['revision']==2
+kid=[n for n in promoted['notes'] if n['id']=='k'][0]
+assert len(promoted['notes'])==2 and kid.get('parentID')=='gp' and not promoted['connections'] and promoted['groups'][0]['memberIDs']==['k']
+_,tidyboard=call(240,'create_board',{'title':'Tidy'})
+_,tidyboard=call(241,'edit_board',{'board_id':tidyboard['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'r','text':'Root','x':100,'y':200,'width':100,'height':60,'color':'#ffffff'}},{'action':'add','collection':'notes','item':{'id':'k1','text':'One','x':0,'y':1000,'width':100,'height':60,'color':'#ffffff','parentID':'r'}},{'action':'add','collection':'notes','item':{'id':'k2','text':'Two','x':0,'y':500,'width':100,'height':60,'color':'#ffffff','parentID':'r'}}]})
+assert tidyboard['revision']==1
+_,tidied=call(242,'tidy_tree_layout',{'board_id':tidyboard['id'],'root_id':'r','expected_revision':1})
+assert tidied['revision']==2
+pos={n['id']:(n['x'],n['y']) for n in tidied['notes']}
+assert pos['r']==(100,200) and pos['k2']==(260,158) and pos['k1']==(260,242),pos
+_,tidied2=call(243,'tidy_tree_layout',{'board_id':tidyboard['id'],'root_id':'r','expected_revision':2})
+assert {n['id']:(n['x'],n['y']) for n in tidied2['notes']}==pos
+r,e=call(244,'tidy_tree_layout',{'board_id':tidyboard['id'],'expected_revision':1});assert r['isError'] and 'conflict' in e.lower(),e
+r,e=call(245,'tidy_tree_layout',{'board_id':tidyboard['id'],'root_id':'zzz','expected_revision':3});assert r['isError'] and 'not found' in e.lower(),e
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
@@ -88,10 +142,13 @@ r,e=call(10,'create_board',{'title':'forbidden'});assert r['isError'] and 'read-
 _,lists=call(12,'list_board_lists',{});assert lists[0]['title']=='Research'
 r,e=call(13,'delete_board_list',{'list_id':lists[0]['id'],'expected_revision':lists[0]['revision']});assert r['isError'] and 'read-only' in e
 r,e=call(15,'set_board_wallpaper',{'board_id':wallboard['id'],'expected_revision':wallboard['revision'],'color':'#000000'});assert r['isError'] and 'read-only' in e
+r,e=call(250,'add_child_note',{'board_id':tidyboard['id'],'parent_id':'r','expected_revision':0});assert r['isError'] and 'read-only' in e
+r,e=call(251,'set_note_parent',{'board_id':tidyboard['id'],'note_id':'k2','parent_id':None,'expected_revision':0});assert r['isError'] and 'read-only' in e
+r,e=call(252,'tidy_tree_layout',{'board_id':tidyboard['id'],'expected_revision':0});assert r['isError'] and 'read-only' in e
 if os.environ.get('COTHINK_TEST_PDF') == '1':
  r,e=call(14,'export_board_pdf',pdf_args);assert r['isError'] and 'read-only' in e
 _,b=call(11,'get_board',{'board_id':b['id']});assert len(b['notes'])==1
 capture,meta=call(151,'capture_board',{'board_id':b['id']});assert not capture.get('isError') and meta['revision']==b['revision'] and capture['content'][1]['type']=='image'
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0
 temporary_home.cleanup()
-print('PASS initialize, list, create, atomic edit, conflicts, cascade, undo, redo, delete, history, import, replace, readonly, persistence')
+print('PASS initialize, list, create, atomic edit, conflicts, cascade, undo, redo, delete, history, import, replace, readonly, persistence, mindmap tree')
