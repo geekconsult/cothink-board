@@ -59,11 +59,12 @@ struct BoardMinimap: View {
             }
             if expanded { Canvas { context, size in
                 let sx = size.width / extent.width, sy = size.height / extent.height
+                let hidden = board.hiddenNoteIDs()
                 for group in board.groups {
                     let rect = CGRect(x: group.x * sx, y: group.y * sy, width: group.width * sx, height: group.height * sy)
                     context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(Color(hex: group.color).opacity(0.45)))
                 }
-                for note in board.notes {
+                for note in board.notes where !hidden.contains(note.id) {
                     let rect = CGRect(x: note.x * sx, y: note.y * sy, width: max(2, note.width * sx), height: max(2, note.height * sy))
                     context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(Color(hex: note.color)))
                 }

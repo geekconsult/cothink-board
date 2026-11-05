@@ -300,6 +300,12 @@ final class BoardViewModel: ObservableObject {
         }
     }
 
+    func toggleFold(_ noteID: String) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked else { return }
+        mutate { $0.toggleFold(noteID: noteID) }
+    }
+
     func detachNote(_ noteID: String) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, board?.notes.first(where: { $0.id == noteID })?.parentID != nil else { return }
@@ -431,7 +437,8 @@ final class BoardViewModel: ObservableObject {
     func createGroup(in rect: BoardRect, selectedMembers: Set<String>? = nil) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, let current = board else { return }
-        let members = current.notes.filter { selectedMembers?.contains($0.id) ?? rect.containsCenter(of: $0) }.map(\.id)
+        let hidden = current.hiddenNoteIDs()
+        let members = current.notes.filter { !hidden.contains($0.id) && (selectedMembers?.contains($0.id) ?? rect.containsCenter(of: $0)) }.map(\.id)
         var group = BoardGroup(title: "Group", x: rect.x, y: rect.y, width: max(80, rect.width), height: max(50, rect.height), color: "#DCECE9")
         group.memberIDs = members
         if mutate({ board in
@@ -445,7 +452,8 @@ final class BoardViewModel: ObservableObject {
     func selectNotes(in rect: BoardRect, additive: Bool = false) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, let current = board else { return }
-        let hits = Set(current.notes.filter { rect.containsCenter(of: $0) }.map(\.id))
+        let hidden = current.hiddenNoteIDs()
+        let hits = Set(current.notes.filter { rect.containsCenter(of: $0) && !hidden.contains($0.id) }.map(\.id))
         if additive {
             var ids = selectedNoteIDs.union(hits)
             if let single = selectedNoteID { ids.insert(single) }
@@ -471,7 +479,8 @@ final class BoardViewModel: ObservableObject {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, let current = board, let group = current.groups.first(where: { $0.id == groupID }) else { return }
         let rect = BoardRect(x: group.x, y: group.y, width: group.width, height: group.height)
-        let members = current.notes.filter { rect.containsCenter(of: $0) }.map(\.id)
+        let hidden = current.hiddenNoteIDs()
+        let members = current.notes.filter { rect.containsCenter(of: $0) && !hidden.contains($0.id) }.map(\.id)
         mutate { board in
             for i in board.groups.indices {
                 if board.groups[i].id == groupID { board.groups[i].memberIDs = members }
@@ -995,7 +1004,8 @@ struct WorkspaceView: View {
                 } else if drawingGroup {
                     Text("Drag on the canvas to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if let start = selectionStart, let end = selectionEnd, let board {
-                    let marqueeCount = board.notes.filter { BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
+                    let hidden = board.hiddenNoteIDs()
+                    let marqueeCount = board.notes.filter { !hidden.contains($0.id) && BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
                     Text("Selecting \(marqueeCount) note\(marqueeCount == 1 ? "" : "s")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if !model.selectedNoteIDs.isEmpty {
                     Text("\(model.selectedNoteIDs.count) notes selected · Drag to move together · ⌘C to copy").font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -1070,6 +1080,7 @@ struct WorkspaceView: View {
     }
 
     func boardCanvas(_ board: Board) -> some View {
+        let hidden = board.hiddenNoteIDs()
         let noteRects = board.notes.map { note in
             let note = displayed(note)
             return BoardRect(x: note.x, y: note.y, width: note.width, height: note.height)
@@ -1128,13 +1139,17 @@ struct WorkspaceView: View {
                         Button("New Note") { model.addNote() }
                     }
                 ForEach(board.groups) { group in groupView(group) }
-                ForEach(board.notes.filter { $0.parentID != nil }) { note in
+                ForEach(board.notes.filter { note in
+                    guard let parentID = note.parentID else { return false }
+                    return !hidden.contains(note.id) && !hidden.contains(parentID)
+                }) { note in
                     if let parent = board.notes.first(where: { $0.id == note.parentID }) {
                         TreeEdgeView(from: displayed(parent), to: displayed(note), canvasWidth: extent.width, canvasHeight: extent.height)
                     }
                 }
                 ForEach(board.connections) { edge in
-                    if let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
+                    if !hidden.contains(edge.from) && !hidden.contains(edge.to),
+                       let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
                         ConnectionView(from: displayed(from), to: displayed(to), edge: displayedConnection(edge), selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
                             .onTapGesture {
                                 selectConnection(edge.id)
@@ -1145,7 +1160,7 @@ struct WorkspaceView: View {
                             })
                     }
                 }
-                ForEach(board.notes) { note in noteView(note, board: board) }
+                ForEach(board.notes.filter { !hidden.contains($0.id) }) { note in noteView(note, board: board) }
                 if let start = selectionStart, let end = selectionEnd {
                     let rect = BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y)
                     Rectangle().fill(Color.accentColor.opacity(0.12))
@@ -1365,6 +1380,8 @@ struct WorkspaceView: View {
             note: displayed(note),
             selected: model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id) || marqueeHighlight(note),
             isEditing: editingObjectID == note.id && !editingGroupTitle,
+            childCount: board.children(of: note.id).count,
+            folded: note.collapsed == true,
             imagePath: note.imagePath,
             assets: board.projectAssets,
             projectFilesDirectory: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -1390,7 +1407,11 @@ struct WorkspaceView: View {
                 let inSelection = model.selectedNoteIDs.contains(note.id) || model.selectedNoteID == note.id
                 let clickedAnotherObject = !inSelection || model.selectedGroupID != nil
                 if editingObjectID != note.id { finishInlineEditing() }
-                if NSEvent.modifierFlags.contains(.shift), model.connectingFrom == nil {
+                if NSEvent.modifierFlags.contains(.option), model.connectingFrom == nil {
+                    NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                    guard !model.draftBlocked else { return }
+                    model.toggleFold(note.id)
+                } else if NSEvent.modifierFlags.contains(.shift), model.connectingFrom == nil {
                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
                     guard !model.draftBlocked else { return }
                     var ids = model.selectedNoteIDs
@@ -1648,6 +1669,8 @@ struct NoteTile: View {
     let note: Note
     let selected: Bool
     let isEditing: Bool
+    let childCount: Int
+    let folded: Bool
     let imagePath: String?
     let assets: [ProjectAsset]
     let projectFilesDirectory: URL
@@ -1723,6 +1746,19 @@ struct NoteTile: View {
                         .padding(3)
                         .background(Circle().fill(.regularMaterial))
                         .offset(x: -10, y: -10)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if childCount > 0, !isEditing {
+                    Text(folded ? "+\(childCount)" : "\(childCount)")
+                        .font(.caption2)
+                        .foregroundStyle(folded ? Color.white : Color.primary.opacity(0.55))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(folded ? Color(hex: "#7A8BA8") : Color.primary.opacity(0.10)))
+                        .padding(6)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
