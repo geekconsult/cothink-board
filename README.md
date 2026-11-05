@@ -204,6 +204,9 @@ By default, the app stores its database and history in `~/Library/Application Su
 | Action | Shortcut |
 | --- | --- |
 | New note | ⌘N |
+| New connected note to the right of the selected note | Tab |
+| New note below the selected note | Return |
+| Copy / paste selected board objects | ⌘C / ⌘V |
 | New board | ⇧⌘N |
 | Group selection or draw a group | ⇧⌘G |
 | Connect selected note, then click target | ⌘L |
@@ -217,6 +220,8 @@ By default, the app stores its database and history in `~/Library/Application Su
 | Show or hide inspector | ⌥⌘2 |
 | Export board | ⇧⌘E |
 | Cancel connection | Escape |
+
+Select several notes with Shift-click or by dragging a selection on the canvas before copying. Copying a group includes its locked notes; connections between copied notes are preserved. Pasting into another board copies linked project files into that board's project folder. An image attached by an external path continues to reference that path.
 
 ## Development and current limits
 

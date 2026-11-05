@@ -122,6 +122,7 @@ public struct Board: Codable, Identifiable, Equatable {
     public var assets: [ProjectAsset]?
     public var tags: [String]? = nil
     public var flagged: Bool? = nil
+    public var icon: String? = nil
     public var color: String? = nil
     public var wallpaperColor: String? = nil
     public var wallpaperAssetID: String? = nil
@@ -129,6 +130,53 @@ public struct Board: Codable, Identifiable, Equatable {
     public init(version: Int = 1, id: String = UUID().uuidString, title: String = "Untitled Board", revision: Int = 0, notes: [Note] = [], connections: [Connection] = [], groups: [BoardGroup] = [], projectFilesPath: String? = nil, assets: [ProjectAsset]? = []) {
         self.version = version; self.id = id; self.title = title; self.revision = revision; self.notes = notes; self.connections = connections; self.groups = groups
         self.projectFilesPath = projectFilesPath; self.assets = assets
+    }
+}
+
+public struct BoardFragment: Codable {
+    public var sourceBoardID: String
+    public var notes: [Note]
+    public var groups: [BoardGroup]
+    public var connections: [Connection]
+    public var assets: [ProjectAsset]
+
+    public static func capture(from board: Board, noteIDs: Set<String>, groupID: String?, connectionID: String?) -> BoardFragment {
+        let groups = board.groups.filter { $0.id == groupID }
+        var ids = noteIDs.union(groups.flatMap { $0.memberIDs ?? [] })
+        if let edge = board.connections.first(where: { $0.id == connectionID }) { ids.formUnion([edge.from, edge.to]) }
+        let notes = board.notes.filter { ids.contains($0.id) }
+        let links = board.connections.filter { ids.contains($0.from) && ids.contains($0.to) }
+        let assets = Set(notes.flatMap { $0.assetIDs ?? [] })
+        return BoardFragment(sourceBoardID: board.id, notes: notes, groups: groups, connections: links,
+                             assets: board.projectAssets.filter { assets.contains($0.id) })
+    }
+
+    @discardableResult
+    public func insert(into board: inout Board, offset: Double, assetIDs: [String: String] = [:]) -> (notes: [String], groups: [String]) {
+        var mapping: [String: String] = [:]
+        for note in notes { mapping[note.id] = UUID().uuidString }
+        var newNotes: [Note] = []
+        for var note in notes {
+            note.id = mapping[note.id]!
+            note.x += offset; note.y += offset
+            note.assetIDs = note.assetIDs?.map { assetIDs[$0] ?? $0 }
+            newNotes.append(note)
+        }
+        var newGroups: [BoardGroup] = []
+        for var group in groups {
+            group.id = UUID().uuidString
+            group.x += offset; group.y += offset
+            group.memberIDs = group.memberIDs?.compactMap { mapping[$0] }
+            newGroups.append(group)
+        }
+        let newConnections: [Connection] = connections.compactMap { edge in
+            guard let from = mapping[edge.from], let to = mapping[edge.to] else { return nil }
+            var copy = edge; copy.id = UUID().uuidString; copy.from = from; copy.to = to
+            copy.routePoints = copy.routePoints?.map { ConnectionPoint(x: $0.x + offset, y: $0.y + offset) }
+            return copy
+        }
+        board.notes += newNotes; board.groups += newGroups; board.connections += newConnections
+        return (newNotes.map(\.id), newGroups.map(\.id))
     }
 }
 public extension Board {

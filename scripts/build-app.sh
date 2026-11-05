@@ -29,6 +29,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleVersion</key><string>1.0.1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>CoThink Board uses the microphone to dictate your message into the chat input.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>CoThink Board transcribes your speech locally into the chat input.</string>
 </dict></plist>
 PLIST
 printf 'APPL????' > "$app/Contents/PkgInfo"

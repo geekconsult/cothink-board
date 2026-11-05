@@ -5,13 +5,46 @@ import Darwin
 public struct ChatMessage: Identifiable, Equatable {
     public enum Role: String { case user, assistant, activity, error }
     public let id: UUID
-    public let role: Role
+    public internal(set) var role: Role
     public var text: String
     public init(role: Role, text: String) { self.id = UUID(); self.role = role; self.text = text }
 }
 
+public struct PiModel: Identifiable, Equatable {
+    public let provider: String
+    public let id: String
+    public let name: String
+    public var key: String { provider + "/" + id }
+    public init(provider: String, id: String, name: String) { self.provider = provider; self.id = id; self.name = name }
+}
+
 public enum ChatPhase: Equatable {
     case stopped, starting, ready, running, failed(String)
+}
+
+/// Everything needed to open one Pi chat session for a board.
+public struct PiChatStartOptions {
+    public var boardID: String
+    public var piPath: String
+    public var extensionPath: String
+    public var mcpPath: String
+    public var home: URL
+    public var extraEnvironment: [String: String]
+    public var sessionMode: ChatSessionMode
+    public var memoryPath: String?
+    public var mcpServersConfigPath: String?
+
+    public init(boardID: String, piPath: String, extensionPath: String, mcpPath: String, home: URL, extraEnvironment: [String: String] = [:], sessionMode: ChatSessionMode = .continueLast, memoryPath: String? = nil, mcpServersConfigPath: String? = nil) {
+        self.boardID = boardID
+        self.piPath = piPath
+        self.extensionPath = extensionPath
+        self.mcpPath = mcpPath
+        self.home = home
+        self.extraEnvironment = extraEnvironment
+        self.sessionMode = sessionMode
+        self.memoryPath = memoryPath
+        self.mcpServersConfigPath = mcpServersConfigPath
+    }
 }
 
 private final class SessionLease {
@@ -31,8 +64,13 @@ public final class PiChatController: ObservableObject {
     @Published public private(set) var phase: ChatPhase = .stopped
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var modelName = ""
+    @Published public private(set) var availableModels: [PiModel] = []
     @Published public private(set) var bridgeReady = false
     @Published public private(set) var activityText = ""
+    @Published public private(set) var contextUsage = ContextUsage()
+    @Published public private(set) var currentSessionFile = ""
+    public var pendingModelKey: String?
+
     private var process: Process?
     private var sessionLease: SessionLease?
     private var input: FileHandle?
@@ -40,12 +78,21 @@ public final class PiChatController: ObservableObject {
     private var stderr: FileHandle?
     private var generation = UUID()
     private var assistantID: UUID?
+    private var boardConflict: (messageID: UUID, refreshed: Bool)?
     private var readyPi = false
     private var historyRequested = false
     private var startupTask: Task<Void, Never>?
     public init() {}
 
-    public func start(boardID: String, piPath: String, extensionPath: String, mcpPath: String, home: URL, extraEnvironment: [String: String] = [:]) {
+    public var onAssistantReply: ((String) -> Void)?
+
+    public func start(options: PiChatStartOptions) {
+        let boardID = options.boardID
+        let piPath = options.piPath
+        let extensionPath = options.extensionPath
+        let mcpPath = options.mcpPath
+        let home = options.home
+        let extraEnvironment = options.extraEnvironment
         let previousProcess = process
         let previousLease = sessionLease
         stop()
@@ -58,18 +105,23 @@ public final class PiChatController: ObservableObject {
                     previousLease?.release()
                 }.value
                 guard let self, self.generation == pendingGeneration else { return }
-                self.start(boardID: boardID, piPath: piPath, extensionPath: extensionPath, mcpPath: mcpPath, home: home, extraEnvironment: extraEnvironment)
+                self.start(options: options)
             }
             return
         }
         previousLease?.release()
-        messages = []; modelName = ""; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false
+        messages = []; modelName = ""; availableModels = []; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false
+        contextUsage = ContextUsage(); currentSessionFile = ""
         guard FileManager.default.isExecutableFile(atPath: piPath) else { phase = .failed("Choose an executable Pi binary in chat settings."); return }
         guard FileManager.default.fileExists(atPath: extensionPath), FileManager.default.isExecutableFile(atPath: mcpPath) else { phase = .failed("CoThink's bundled Pi bridge or MCP server is missing. Rebuild the app."); return }
         let encodedID = Data(boardID.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "=", with: "")
         let sessionDirectory = home.appendingPathComponent("AgentSessions", isDirectory: true).appendingPathComponent(encodedID, isDirectory: true)
         do { try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true) }
         catch { phase = .failed("Cannot create the local chat session: \(error.localizedDescription)"); return }
+        let memoryURL = sessionDirectory.appendingPathComponent("memory.md")
+        if !FileManager.default.fileExists(atPath: memoryURL.path) {
+            try? AgentMemory.emptyTemplate.write(to: memoryURL, atomically: true, encoding: .utf8)
+        }
         let lockPath = sessionDirectory.appendingPathComponent(".session.lock").path
         let fd = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { phase = .failed("Cannot lock this board's Pi session. Check its folder permissions."); return }
@@ -82,13 +134,27 @@ public final class PiChatController: ObservableObject {
         let proc = Process(), inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         let runID = UUID(); generation = runID
         proc.executableURL = URL(fileURLWithPath: piPath)
-        proc.arguments = ["--mode", "rpc", "--continue", "--session-dir", sessionDirectory.path, "--no-extensions", "--extension", extensionPath, "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-context-files", "--offline", "--append-system-prompt", "You are assisting with the current CoThink board. Use the CoThink tools to read context and make requested edits. Board ID: \(boardID). Obtain fresh revisions before edits. Do not claim actions succeeded if a tool returned an error."]
+        var arguments = ["--mode", "rpc"]
+        switch options.sessionMode {
+        case .continueLast: arguments += ["--continue"]
+        case .newSession: break
+        case .resume(let path): arguments += ["--session", path]
+        }
+        arguments += ["--session-dir", sessionDirectory.path, "--no-extensions", "--extension", extensionPath, "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-context-files", "--offline", "--append-system-prompt", "You are assisting with the current CoThink board. Use the CoThink tools to read context and make requested edits. Board ID: \(boardID). Obtain fresh revisions before edits. If an edit reports a revision conflict, read the current board again, reconsider the user's requested change against the new state, and retry with its new revision only when appropriate. Explain if you cannot safely complete the request. Do not claim actions succeeded if a tool returned an error."]
+        if FileManager.default.fileExists(atPath: memoryURL.path) {
+            arguments += ["--append-system-prompt", memoryURL.path]
+        }
+        proc.arguments = arguments
         var env = ProcessInfo.processInfo.environment
         env.merge(extraEnvironment) { _, new in new }
         env["COTHINK_PI_BOARD_ID"] = boardID
         env["COTHINK_MCP_PATH"] = mcpPath
         env["COTHINK_MCP_ACTOR"] = "pi"
         env["COTHINK_HOME"] = home.path
+        env["COTHINK_MEMORY_PATH"] = memoryURL.path
+        if let mcpServersConfigPath = options.mcpServersConfigPath, !mcpServersConfigPath.isEmpty {
+            env["COTHINK_MCP_SERVERS_CONFIG"] = mcpServersConfigPath
+        }
         let currentPath = env["PATH"] ?? "/usr/bin:/bin"
         env["PATH"] = currentPath + ":/opt/homebrew/bin:/usr/local/bin"
         proc.environment = env
@@ -117,10 +183,20 @@ public final class PiChatController: ObservableObject {
     public func send(_ message: String) {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard phase == .ready, !text.isEmpty else { return }
-        messages.append(ChatMessage(role: .user, text: text)); assistantID = nil; activityText = "Starting…"; phase = .running
+        messages.append(ChatMessage(role: .user, text: text)); assistantID = nil; boardConflict = nil; activityText = "Starting…"; phase = .running
         sendCommand(["id": UUID().uuidString, "type": "prompt", "message": text])
     }
     public func cancel() { guard phase == .running else { return }; sendCommand(["type": "abort"]) }
+    public func selectModel(key: String) {
+        guard !key.isEmpty else { pendingModelKey = nil; return }
+        guard key.contains("/") else { messages.append(ChatMessage(role: .error, text: "Invalid model choice.")); return }
+        pendingModelKey = key
+        if phase == .ready { sendSetModel(key) }
+    }
+    private func sendSetModel(_ key: String) {
+        guard let separator = key.firstIndex(of: "/") else { return }
+        sendCommand(["id": UUID().uuidString, "type": "set_model", "provider": String(key[key.startIndex..<separator]), "modelId": String(key[key.index(after: separator)...])])
+    }
     public func stop() {
         startupTask?.cancel(); startupTask = nil
         generation = UUID()
@@ -129,7 +205,7 @@ public final class PiChatController: ObservableObject {
         if let process, process.isRunning { process.terminate() }
         else { sessionLease?.release() }
         process = nil; sessionLease = nil; input = nil; stdout = nil; stderr = nil
-        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false
+        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false; boardConflict = nil
     }
     private func fail(_ message: String) {
         stop(); phase = .failed(message)
@@ -177,6 +253,7 @@ public final class PiChatController: ObservableObject {
         if readyPi && bridgeReady && phase == .starting && !historyRequested {
             historyRequested = true
             sendCommand(["id": "history", "type": "get_messages"])
+            if let key = pendingModelKey { sendSetModel(key) }
         }
     }
     private func handleLine(_ line: Data) {
@@ -190,7 +267,22 @@ public final class PiChatController: ObservableObject {
             } else if command == "get_state" {
                 let state = event["data"] as? [String: Any]
                 if let model = state?["model"] as? [String: Any] { modelName = model["name"] as? String ?? model["id"] as? String ?? "" }
+                if let state {
+                    contextUsage = ContextUsage.update(fromState: state, into: contextUsage)
+                    if let file = state["sessionFile"] as? String { currentSessionFile = file }
+                }
                 readyPi = true; updateReadiness()
+                sendCommand(["id": "models", "type": "get_available_models"])
+            } else if command == "get_available_models" {
+                let models = ((event["data"] as? [String: Any])?["models"] as? [[String: Any]] ?? []).compactMap { entry -> PiModel? in
+                    guard let id = entry["id"] as? String else { return nil }
+                    return PiModel(provider: entry["provider"] as? String ?? "", id: id, name: entry["name"] as? String ?? id)
+                }
+                availableModels = models.sorted { ($0.provider, $0.name) < ($1.provider, $1.name) }
+            } else if command == "set_model", let model = event["data"] as? [String: Any] {
+                let name = model["name"] as? String ?? model["id"] as? String ?? ""
+                modelName = name
+                messages.append(ChatMessage(role: .activity, text: "Switched to \(name)."))
             } else if command == "get_messages", phase == .starting {
                 guard let data = event["data"] as? [String: Any], let previous = data["messages"] as? [[String: Any]] else { fail("Pi returned invalid chat history."); return }
                 for item in previous {
@@ -221,7 +313,12 @@ public final class PiChatController: ObservableObject {
                 }
             }
         case "message_end":
-            if let message = event["message"] as? [String: Any], let reason = message["stopReason"] as? String, reason == "error", let error = message["errorMessage"] as? String { reportFailure(error) }
+            if let message = event["message"] as? [String: Any] {
+                if message["role"] as? String == "assistant", let tokens = ContextUsage.usageTokens(fromMessage: message) {
+                    contextUsage.usedTokens = tokens
+                }
+                if let reason = message["stopReason"] as? String, reason == "error", let error = message["errorMessage"] as? String { reportFailure(error) }
+            }
         case "tool_execution_start":
             assistantID = nil
             let name = event["toolName"] as? String ?? "board tool"
@@ -234,15 +331,37 @@ public final class PiChatController: ObservableObject {
             let name = event["toolName"] as? String ?? "board tool"
             if event["isError"] as? Bool == true {
                 let detail = textContent(event["result"], limit: 1200)
-                reportFailure(detail.isEmpty ? "\(name) failed. Pi may provide more details." : "\(name) failed. \(detail)")
-            } else if phase == .running { activityText = "Thinking…" }
+                let text = detail.isEmpty ? "\(name) failed. Pi may provide more details." : "\(name) failed. \(detail)"
+                reportFailure(text)
+                if phase == .running, name == "cothink_edit_board", detail.localizedCaseInsensitiveContains("revision conflict"), let message = messages.last {
+                    boardConflict = (message.id, false)
+                }
+            } else if phase == .running {
+                if event["isError"] as? Bool == false, var conflict = boardConflict {
+                    if name == "cothink_get_board" || name == "cothink_get_board_context" {
+                        conflict.refreshed = true
+                        boardConflict = conflict
+                    } else if name == "cothink_edit_board", conflict.refreshed,
+                              let index = messages.firstIndex(where: { $0.id == conflict.messageID }) {
+                        messages[index].role = .activity
+                        messages[index].text = "The board changed during an edit. Pi re-read the board, and a later edit succeeded."
+                        boardConflict = nil
+                    }
+                }
+                activityText = "Thinking…"
+            }
         case "extension_error":
             reportFailure(event["error"] as? String ?? "Pi extension error.")
         case "auto_retry_start":
             setActivity("Retrying with Pi…", record: true)
         case "auto_retry_end":
             if phase == .running { setActivity("Thinking…", record: true) }
-        case "agent_end": if phase == .running { phase = .ready; activityText = ""; assistantID = nil }
+        case "agent_end":
+            if phase == .running {
+                let reply = messages.last(where: { $0.role == .assistant })?.text ?? ""
+                phase = .ready; activityText = ""; assistantID = nil
+                if !reply.isEmpty { onAssistantReply?(reply) }
+            }
         default: break
         }
     }

@@ -10,20 +10,49 @@ private enum ChatMarkdownBlock {
 
 struct PiChatView: View {
     let board: Board
-    @StateObject private var chat = PiChatController()
+    let session: AgentChatSession
+    @ObservedObject private var chat: PiChatController
+    @ObservedObject private var tts: TTSController
     @AppStorage("piExecutablePath") private var piExecutablePath = ""
     @AppStorage("agentChatFontSize") private var chatFontSize = 14.0
+    @AppStorage("dictationLocaleIdentifier") private var dictationLocale = ""
+    @AppStorage("piModelKey") private var piModelKey = ""
+    @AppStorage("jevApiKey") private var jevApiKey = ""
     @State private var input = ""
-    @State private var settingsVisible = false
     @State private var offerAgentSetup = false
+    @StateObject private var dictation = DictationController()
+    @State private var dictationBase: String?
+    @State private var voiceHint: String?
+    @State private var voiceHintTask: Task<Void, Never>?
+    @State private var pendingVoiceCommand: String?
+    @State private var lastVoiceUtterance = ""
     @FocusState private var inputFocused: Bool
+    @State private var voiceMode = false
+    @AppStorage("voiceFilterEnabled") private var voiceFilterEnabled = true
+    @AppStorage("speakRepliesEnabled") private var speakRepliesEnabled = true
 
-    private var home: URL {
-        if let path = ProcessInfo.processInfo.environment["COTHINK_HOME"], !path.isEmpty { return URL(fileURLWithPath: path, isDirectory: true) }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CoThinkBoard", isDirectory: true)
+    init(board: Board, session: AgentChatSession) {
+        self.board = board
+        self.session = session
+        _chat = ObservedObject(wrappedValue: session.chat)
+        _tts = ObservedObject(wrappedValue: session.tts)
     }
-    private var extensionPath: String { Bundle.main.path(forResource: "CoThinkPiExtension", ofType: "ts") ?? "" }
-    private var mcpPath: String { Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("cothink-mcp").path ?? "" }
+
+    private var unavailableVoiceMessage: String? {
+        if case let .unavailable(message) = dictation.phase { return message }
+        return nil
+    }
+    private var dictationActive: Bool { dictation.phase == .listening || dictation.phase == .reconnecting || dictation.phase == .requestingAuthorization }
+    private var lastAssistantReply: String {
+        chat.messages.last(where: { $0.role == .assistant })?.text ?? ""
+    }
+    private var conversationEstimate: Int {
+        let characters = chat.messages
+            .filter { $0.role == .user || $0.role == .assistant }
+            .map { $0.text.count }
+            .reduce(0, +)
+        return characters / 4
+    }
     private var status: String {
         switch chat.phase {
         case .stopped: return "Disconnected"
@@ -34,23 +63,30 @@ struct PiChatView: View {
         }
     }
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack {
+            VStack(spacing: 0) {
             HStack(alignment: .center) {
                 MascotLogo().frame(width: 36, height: 36)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Agent chat").font(.headline)
+                    Text("Agent · \(board.title)").font(.headline).lineLimit(1).truncationMode(.tail)
                     HStack(spacing: 5) {
                         Circle().fill(chat.phase == .ready || chat.phase == .running ? Color.green : Color.secondary.opacity(0.55)).frame(width: 6, height: 6)
                         Text(status).lineLimit(1)
                     }.font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { settingsVisible.toggle() } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(.borderless).modifier(GlassControl()).help("Pi settings")
-                    .accessibilityLabel("Pi settings")
-                    .popover(isPresented: $settingsVisible, arrowEdge: .top) {
-                        settingsPanel.padding(16).frame(width: 340)
-                    }
+                ContextUsageBadge(usage: chat.contextUsage, conversationEstimate: conversationEstimate)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.3)) { toggleVoiceMode() }
+                } label: { Image(systemName: "waveform") }
+                    .buttonStyle(.borderless).modifier(GlassControl()).help("Voice mode")
+                    .accessibilityLabel("Voice mode")
+                Button { AuxiliaryWindowHost.shared.open(id: "agent-settings") } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.borderless).modifier(GlassControl()).help("Agent chat settings")
+                    .accessibilityLabel("Agent chat settings")
+                Button { AuxiliaryWindowHost.shared.open(id: "chat-history") } label: { Image(systemName: "clock.arrow.circlepath") }
+                    .buttonStyle(.borderless).modifier(GlassControl()).help("Chat history")
+                    .accessibilityLabel("Chat history")
             }.padding(.horizontal, 16).padding(.vertical, 12)
                 .background(.thinMaterial)
             if case .failed(let error) = chat.phase {
@@ -96,6 +132,31 @@ struct PiChatView: View {
                         .textFieldStyle(.plain).lineLimit(1...5).focused($inputFocused)
                         .onSubmit(send)
                         .disabled(chat.phase != .ready)
+                    Button(action: dictation.toggle) {
+                        Image(systemName: dictationActive ? "mic.fill" : "mic")
+                            .font(.title2)
+                            .foregroundStyle(dictationActive ? Color.red : Color.accentColor)
+                            .symbolEffect(.pulse, options: .repeating, isActive: dictation.phase == .listening)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(dictationActive ? "Stop dictation" : "Dictate")
+                    .help(dictationActive ? "Stop dictation" : "Dictate")
+                    Menu {
+                        Picker("Dictation language", selection: $dictationLocale) {
+                            Text("Automatic").tag("")
+                            Text("ไทย").tag("th-TH")
+                            Text("English (US)").tag("en-US")
+                        }
+                    } label: {
+                        Image(systemName: "globe")
+                            .font(.body)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .help("Dictation language")
+                    .accessibilityLabel("Dictation language")
                     if chat.phase == .running { Button("Stop", systemImage: "stop.fill") { chat.cancel() } }
                     Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
                         .buttonStyle(.plain).accessibilityLabel("Send")
@@ -103,19 +164,74 @@ struct PiChatView: View {
                 }
                 .padding(.horizontal, 13).padding(.vertical, 10)
                 .modifier(GlassFloatingSurface())
+                if case .unavailable(let message) = dictation.phase {
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
+                }
+                if let voiceHint {
+                    Text(voiceHint).font(.caption2).foregroundStyle(.secondary)
+                }
             }.padding(.horizontal, 12).padding(.vertical, 10)
+            }
+            if voiceMode {
+                VoiceModeView(
+                    listening: dictation.phase == .listening,
+                    reconnecting: dictation.phase == .reconnecting,
+                    chatPhase: chat.phase,
+                    combinedText: dictation.combinedText,
+                    lastUtterance: lastVoiceUtterance,
+                    assistantReply: lastAssistantReply,
+                    hint: voiceHint ?? "",
+                    speaking: tts.isSpeaking,
+                    unavailableMessage: unavailableVoiceMessage,
+                    jevFilterEnabled: $voiceFilterEnabled,
+                    speakRepliesEnabled: $speakRepliesEnabled,
+                    onClose: { withAnimation(.easeInOut(duration: 0.3)) { voiceMode = false; dictation.stop() } },
+                    onMicToggle: { dictation.toggle() }
+                )
+                .zIndex(2)
+            }
         }
         .background(.thinMaterial)
         .onAppear {
-            if piExecutablePath.isEmpty {
-                discoverPi()
+            dictation.preferredLocaleIdentifier = dictationLocale.isEmpty ? nil : dictationLocale
+            dictation.onUtterance = { handleVoiceUtterance($0) }
+            chat.pendingModelKey = piModelKey.isEmpty ? nil : piModelKey
+            chat.onAssistantReply = { [weak tts = session.tts] text in
+                guard let tts else { return }
+                if speakRepliesEnabled { tts.speak(text) }
             }
-            if !piExecutablePath.isEmpty { connect() }
-            else { settingsVisible = true; offerAgentSetup = true }
+            if piExecutablePath.isEmpty {
+                piExecutablePath = AgentChatSession.discoverPiPath()
+            }
+            if !piExecutablePath.isEmpty {
+                session.ensureConnected(boardID: board.id, piPath: piExecutablePath)
+            } else {
+                offerAgentSetup = true
+            }
         }
-        .onDisappear { chat.stop() }
+        .onDisappear { dictation.stop(); tts.stop() }
+        .onChange(of: dictation.phase) { oldPhase, newPhase in
+            if newPhase == .listening, oldPhase != .reconnecting { dictationBase = input }
+            if (oldPhase == .listening || oldPhase == .reconnecting), newPhase == .idle, let base = dictationBase {
+                input = dictation.mergedInput(base: base, combined: dictation.combinedText)
+                dictationBase = nil
+            }
+        }
+        .onChange(of: dictation.combinedText) { _, combined in
+            guard dictation.phase == .listening, let base = dictationBase else { return }
+            input = dictation.mergedInput(base: base, combined: combined)
+        }
+        .onChange(of: dictationLocale) { _, locale in
+            dictation.preferredLocaleIdentifier = locale.isEmpty ? nil : locale
+            dictation.stop()
+        }
+        .onChange(of: chat.phase) { _, newPhase in
+            guard newPhase == .ready, let pending = pendingVoiceCommand else { return }
+            pendingVoiceCommand = nil
+            chat.send(pending)
+        }
         .alert("Set up agent chat?", isPresented: $offerAgentSetup) {
-            Button("Set Up Pi") { installPi() }
+            Button("Set Up Pi") { AgentChatSession.installPi() }
             Button("Later", role: .cancel) { }
         } message: {
             Text("Agent chat uses Pi and a model provider. Setup installs Pi in your user folder and requires Node.js and npm.")
@@ -123,51 +239,6 @@ struct PiChatView: View {
     }
     private func label(_ role: ChatMessage.Role) -> String {
         switch role { case .user: return "You"; case .assistant: return "Pi"; case .activity: return "Activity"; case .error: return "Error" }
-    }
-    private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Chat settings").font(.headline)
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Pi executable").font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField("Path to Pi executable", text: $piExecutablePath)
-                        .textFieldStyle(.roundedBorder).font(.caption)
-                    Button("Choose…", action: choosePi)
-                }
-                Text("Uses your Pi model and credentials. Chat tools can edit this board.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Set Up Pi…", action: installPi)
-                    Button("Check Again") { discoverPi() }
-                }
-                Text("After installation, use /login and /model in Pi, then check again here.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Message text size").font(.caption.weight(.semibold))
-                    Spacer()
-                    Text("\(Int(chatFontSize)) pt").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                Slider(value: $chatFontSize, in: 12...22, step: 1)
-                    .accessibilityLabel("Chat message text size")
-                Text("Preview of chat text").font(.system(size: chatFontSize)).lineLimit(1)
-            }
-            HStack {
-                if chat.phase == .stopped || isFailed {
-                    Button("Connect") { connect() }
-                        .disabled(piExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                } else {
-                    Button("Disconnect") { chat.stop() }
-                }
-                Spacer()
-                Button("Done") { settingsVisible = false }
-            }
-        }
-    }
-    private var isFailed: Bool {
-        if case .failed = chat.phase { return true }
-        return false
     }
     @ViewBuilder
     private func markdownMessage(_ text: String) -> some View {
@@ -268,32 +339,52 @@ struct PiChatView: View {
         if line.trimmingCharacters(in: .whitespaces).hasSuffix("|"), !cells.isEmpty { cells.removeLast() }
         return cells.count > 1 ? cells : nil
     }
-    private func choosePi() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose the Pi executable"
-        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            piExecutablePath = url.path
-            connect()
-            settingsVisible = false
-        }
-    }
-    private func discoverPi() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [home.appendingPathComponent(".local/share/cothink/pi/bin/cothink-pi").path, "/opt/homebrew/bin/pi", "/usr/local/bin/pi", home.appendingPathComponent(".local/bin/pi").path]
-        if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { piExecutablePath = found }
-    }
-    private func installPi() {
-        guard let url = Bundle.main.url(forResource: "install-pi", withExtension: "command") else { return }
-        NSWorkspace.shared.open(url)
-    }
-    private func connect() {
-        chat.start(boardID: board.id, piPath: piExecutablePath, extensionPath: extensionPath, mcpPath: mcpPath, home: home)
-        if !piExecutablePath.isEmpty { settingsVisible = false }
+    private func toggleVoiceMode() {
+        voiceMode.toggle()
+        if voiceMode { dictation.start() } else { dictation.stop() }
     }
     private func send() {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dictating = dictation.phase == .listening || dictation.phase == .reconnecting
+        if dictating { dictation.stop() }
+        let text = (dictating
+            ? dictation.mergedInput(base: dictationBase ?? "", combined: dictation.combinedText)
+            : input).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, chat.phase == .ready else { return }
-        input = ""; chat.send(text)
+        input = ""; dictationBase = nil; chat.send(text)
+    }
+    private func handleVoiceUtterance(_ text: String) {
+        let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !utterance.isEmpty else { return }
+        lastVoiceUtterance = utterance
+        guard voiceFilterEnabled else {
+            deliverVoiceCommand(utterance)
+            return
+        }
+        Task {
+            let outcome = await JevClassifier(apiKey: jevApiKey).classify(utterance: utterance)
+            if !outcome.isCommand, outcome.filterActive {
+                showVoiceHint("Speech seems unrelated to board work, discarded.")
+                return
+            }
+            if outcome.error != nil { showVoiceHint("Voice filter unavailable, sent anyway.") }
+            deliverVoiceCommand(utterance)
+        }
+    }
+    private func deliverVoiceCommand(_ text: String) {
+        guard chat.phase == .ready else {
+            pendingVoiceCommand = text
+            showVoiceHint("Pi is busy. The command will send when ready.")
+            return
+        }
+        chat.send(text)
+    }
+    private func showVoiceHint(_ message: String) {
+        voiceHintTask?.cancel()
+        voiceHint = message
+        voiceHintTask = Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            voiceHint = nil
+        }
     }
 }

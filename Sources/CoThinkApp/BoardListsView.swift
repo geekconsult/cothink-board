@@ -180,25 +180,100 @@ struct BoardSettingsView: View {
     @State private var title: String
     @State private var tags: String
     @State private var flagged: Bool
+    @State private var icon: String
     @State private var color: String
+    @State private var showingEmojiPicker = false
     init(model: BoardViewModel, board: Board) {
         self.model = model; self.board = board
         _title = State(initialValue: board.title); _tags = State(initialValue: (board.tags ?? []).joined(separator: ", "))
-        _flagged = State(initialValue: board.flagged ?? false); _color = State(initialValue: board.color ?? "#7A8BA8")
+        _flagged = State(initialValue: board.flagged ?? false)
+        _icon = State(initialValue: board.icon ?? "")
+        _color = State(initialValue: board.color ?? "#7A8BA8")
     }
     var body: some View {
         Form {
             Text("Board settings").font(.headline)
             TextField("Name", text: $title)
+            HStack(spacing: 12) {
+                Text("Icon").font(.callout)
+                Button {
+                    showingEmojiPicker = true
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06))
+                        Text(icon.isEmpty ? "＋" : icon).font(.system(size: 22))
+                    }
+                    .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingEmojiPicker, arrowEdge: .bottom) {
+                    EmojiPickerView(selected: $icon)
+                }
+                if !icon.isEmpty {
+                    Button("Clear") { icon = "" }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
             TextField("Tags (comma separated)", text: $tags)
             Toggle("Flagged", isOn: $flagged)
             Picker("Color", selection: $color) { ForEach(organizationColors, id: \.1) { Text($0.0).tag($0.1) } }
             HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") {
                 guard model.board?.id == board.id else { return }
                 var updated = board
-                updated.title = title; updated.tags = tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }; updated.flagged = flagged; updated.color = color
+                updated.title = title; updated.tags = tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                updated.flagged = flagged; updated.color = color
+                updated.icon = icon.isEmpty ? nil : icon
                 if model.saveBoardSettings(updated) { dismiss() }
             }.keyboardShortcut(.defaultAction) }
         }.padding(24)
+    }
+}
+
+/// Curated emoji grid for board icons.
+struct EmojiPickerView: View {
+    @Binding var selected: String
+    @Environment(\.dismiss) private var dismiss
+    static let emojis: [String] = [
+        "📌", "📎", "🎯", "🚀", "💡", "⭐", "🔥", "✅", "❗", "❓", "🧠", "🧩",
+        "📈", "📉", "📊", "🗓️", "⏰", "🔔", "💰", "💳", "🧾", "📦", "🛒", "🏷️",
+        "👥", "🧑", "🗣️", "📞", "✉️", "📨", "📝", "📋", "🗂️", "📁", "📂", "🔍",
+        "⚙️", "🔧", "🛠️", "🧪", "🔬", "💻", "🖥️", "📱", "🌐", "☁️", "🔒", "🔑",
+        "🎨", "🖼️", "🎵", "🎬", "📷", "🏔️", "🌊", "🌱", "🌳", "🌼", "🐾", "☕",
+        "🍎", "🍜", "🍰", "🍺", "🎁", "🎉", "🏆", "🥇", "⚽", "🏃", "✈️", "🚗",
+        "🏠", "🏢", "🗺️", "🧭", "⚡", "🌈", "☀️", "🌙", "❤️", "💙", "🤝", "👍",
+        "😀", "😅", "😍", "🤔", "😴", "🤖", "👻", "🎃", "🐼", "🦊", "🐧", "🐢",
+    ]
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 12)
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("Choose an icon").font(.headline)
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).accessibilityLabel("Close icon picker")
+            }
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(Self.emojis, id: \.self) { emoji in
+                        Button {
+                            selected = emoji
+                            dismiss()
+                        } label: {
+                            Text(emoji)
+                                .font(.system(size: 21))
+                                .frame(width: 34, height: 34)
+                                .background(selected == emoji ? Color.accentColor.opacity(0.22) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .help(emoji)
+                    }
+                }
+            }
+            .frame(width: 480, height: 300)
+        }
+        .padding(16)
     }
 }

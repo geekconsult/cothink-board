@@ -2,6 +2,30 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testCopyGroupPreservesMembersAndConnectionsWithNewIDs() throws {
+        var a = Note(id: "a", text: "A", x: 20, y: 30)
+        a.assetIDs = ["asset"]
+        let b = Note(id: "b", text: "B", x: 300, y: 30)
+        let outside = Note(id: "c", text: "Outside", x: 600, y: 30)
+        var group = BoardGroup(id: "g", x: 0, y: 0)
+        group.memberIDs = ["a", "b"]
+        var inside = Connection(id: "inside", from: "a", to: "b", direction: .twoWay, label: "related")
+        inside.route = .custom; inside.routePoints = [ConnectionPoint(x: 250, y: 80)]
+        let external = Connection(id: "external", from: "b", to: "c")
+        var board = Board(notes: [a, b, outside], connections: [inside, external], groups: [group], assets: [ProjectAsset(id: "asset", name: "doc.pdf", relativePath: "doc.pdf")])
+        let fragment = BoardFragment.capture(from: board, noteIDs: [], groupID: "g", connectionID: nil)
+        XCTAssertEqual(fragment.notes.map(\.id), ["a", "b"])
+        XCTAssertEqual(fragment.connections.map(\.id), ["inside"])
+        let inserted = fragment.insert(into: &board, offset: 36, assetIDs: ["asset": "new-asset"])
+        XCTAssertEqual(inserted.notes.count, 2)
+        XCTAssertEqual(Set(board.groups.last!.memberIDs!), Set(inserted.notes))
+        let copied = board.connections.last!
+        XCTAssertEqual(copied.from, inserted.notes[0]); XCTAssertEqual(copied.to, inserted.notes[1])
+        XCTAssertEqual(copied.effectiveDirection, .twoWay); XCTAssertEqual(copied.label, "related")
+        XCTAssertEqual(copied.routePoints, [ConnectionPoint(x: 286, y: 116)])
+        XCTAssertEqual(board.notes[3].assetIDs, ["new-asset"])
+        XCTAssertEqual(board.notes[3].x, 56)
+    }
     func testWallpaperPersistsValidatesAndAppearsInPDFHTML() throws {
         let store = try store()
         var board = try store.create(title: "Wallpaper", actor: "user")

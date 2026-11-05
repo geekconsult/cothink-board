@@ -4,13 +4,46 @@ import Combine
 import UniformTypeIdentifiers
 import BoardCore
 
+private struct CanvasClipboard: Codable {
+    var fragment: BoardFragment
+    var sourceFolder: String
+}
+private let canvasClipboardType = NSPasteboard.PasteboardType("com.cothink.board.objects.v1")
+
+private struct CanvasShortcutMonitor: NSViewRepresentable {
+    var handle: (NSEvent) -> Bool
+    final class Coordinator {
+        var handle: (NSEvent) -> Bool
+        var monitor: Any?
+        weak var view: NSView?
+        init(handle: @escaping (NSEvent) -> Bool) { self.handle = handle }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(handle: handle) }
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.view = view
+        let coordinator = context.coordinator
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator] event in
+            guard let coordinator, let window = coordinator.view?.window, event.window === window else { return event }
+            return coordinator.handle(event) ? nil : event
+        }
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) { context.coordinator.handle = handle }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor); coordinator.monitor = nil }
+    }
+}
+
 @main
 struct CoThinkApp: App {
     @StateObject private var model = BoardViewModel()
+    @StateObject private var agentSession = AgentChatSession()
 
     var body: some Scene {
         WindowGroup {
-            WorkspaceView(model: model)
+            WorkspaceView(model: model, agentSession: agentSession)
                 .frame(minWidth: 920, minHeight: 620)
         }
         .commands {
@@ -21,7 +54,7 @@ struct CoThinkApp: App {
             CommandMenu("Board") {
                 Button("Group Selection or Draw Group") { NotificationCenter.default.post(name: .createGroupCommand, object: nil) }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(model.board == nil)
                 Button("Connect Selected Note") { model.beginConnection() }.keyboardShortcut("l", modifiers: .command).disabled(model.selectedNoteID == nil)
-                Button("Delete Selection") { model.deleteSelection() }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection)
+                Button("Delete Selection") { NotificationCenter.default.post(name: .requestDeleteSelectionCommand, object: nil) }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection)
                 Button("Change Wallpaper…") { NotificationCenter.default.post(name: .wallpaperCommand, object: nil) }.disabled(model.board == nil)
                 Divider()
                 Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil)
@@ -43,6 +76,8 @@ struct CoThinkApp: App {
 
 @MainActor
 final class BoardViewModel: ObservableObject {
+    private var clipboardChangeCount = -1
+    private var pasteCount = 0
     @Published var boards: [Board] = []
     @Published var boardLists: [BoardList] = []
     @Published var history: [Change] = []
@@ -51,15 +86,16 @@ final class BoardViewModel: ObservableObject {
     @Published var selectedNoteID: String?
     @Published var selectedNoteIDs: Set<String> = []
     var hasSelection: Bool { selectedNoteID != nil || !selectedNoteIDs.isEmpty || selectedGroupID != nil || selectedConnectionID != nil }
+    var selectionCount: Int { (selectedNoteID != nil ? 1 : 0) + selectedNoteIDs.count + (selectedGroupID != nil ? 1 : 0) + (selectedConnectionID != nil ? 1 : 0) }
     @Published var selectedGroupID: String?
     @Published var selectedConnectionID: String?
     @Published var connectingFrom: String?
     @Published var error: String?
     private var store: BoardStore?
 
-    init() {
+    init(storeDirectory: URL? = nil) {
         do {
-            store = try BoardStore()
+            store = try BoardStore(directory: storeDirectory)
             try refresh()
             if boards.isEmpty { createBoard() }
             else if let first = boards.first { selectBoard(first.id) }
@@ -174,6 +210,91 @@ final class BoardViewModel: ObservableObject {
         selectedNoteIDs = []
         selectedGroupID = nil
         selectedConnectionID = nil
+    }
+
+    func addAdjacentNote(toRight: Bool) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let sourceID = selectedNoteID,
+              let source = board?.notes.first(where: { $0.id == sourceID }) else { return }
+        let note = Note(text: "New idea", x: toRight ? source.x + source.width + 70 : source.x,
+                        y: toRight ? source.y : source.y + source.height + 70,
+                        width: 190, height: 100, color: "#FFF1AF")
+        if mutate({ board in
+            board.notes.append(note)
+            if toRight { board.connections.append(Connection(from: source.id, to: note.id, direction: .oneWay)) }
+        }) {
+            selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+        }
+    }
+
+    func copySelection() {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let board else { return }
+        var ids = selectedNoteIDs
+        if let selectedNoteID { ids.insert(selectedNoteID) }
+        let fragment = BoardFragment.capture(from: board, noteIDs: ids, groupID: selectedGroupID, connectionID: selectedConnectionID)
+        guard !fragment.notes.isEmpty || !fragment.groups.isEmpty else { return }
+        let folder = board.projectFilesPath ?? defaultProjectFilesDirectory(for: board.id).path
+        guard let data = try? JSONEncoder().encode(CanvasClipboard(fragment: fragment, sourceFolder: folder)) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents(); pasteboard.setData(data, forType: canvasClipboardType)
+        clipboardChangeCount = pasteboard.changeCount; pasteCount = 0
+    }
+
+    func pasteSelection() {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let current = board,
+              let data = NSPasteboard.general.data(forType: canvasClipboardType),
+              let copied = try? JSONDecoder().decode(CanvasClipboard.self, from: data),
+              !copied.fragment.notes.isEmpty || !copied.fragment.groups.isEmpty else { return }
+        let fragment = copied.fragment
+        guard Set(fragment.notes.map(\.id)).count == fragment.notes.count,
+              Set(fragment.groups.map(\.id)).count == fragment.groups.count,
+              Set(fragment.assets.map(\.id)).count == fragment.assets.count else { error = "The copied objects are invalid."; return }
+        let referenced = Set(fragment.notes.flatMap { $0.assetIDs ?? [] })
+        guard referenced.isSubset(of: Set(fragment.assets.map(\.id))) else { error = "The copied note has a missing project file."; return }
+        if current.id == fragment.sourceBoardID && !referenced.isSubset(of: Set(current.projectAssets.map(\.id))) {
+            error = "A copied project file is no longer linked to this board."; return
+        }
+        let pasteboard = NSPasteboard.general
+        if clipboardChangeCount != pasteboard.changeCount { clipboardChangeCount = pasteboard.changeCount; pasteCount = 0 }
+        var addedAssets: [ProjectAsset] = []
+        var assetMapping: [String: String] = [:]
+        var copiedFiles: [URL] = []
+        if current.id != fragment.sourceBoardID && !fragment.assets.isEmpty {
+            let destination = current.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? defaultProjectFilesDirectory(for: current.id)
+            let sourceFolder = URL(fileURLWithPath: copied.sourceFolder, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+            do {
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                for asset in fragment.assets where referenced.contains(asset.id) {
+                    guard !asset.relativePath.hasPrefix("/"), !asset.relativePath.split(separator: "/").contains("..") else { throw BoardError.invalid("project file path") }
+                    let source = sourceFolder.appendingPathComponent(asset.relativePath).standardizedFileURL.resolvingSymlinksInPath()
+                    guard source.path.hasPrefix(sourceFolder.path + "/") else { throw BoardError.invalid("project file path") }
+                    let filename = UUID().uuidString + "-" + URL(fileURLWithPath: asset.name).lastPathComponent
+                    let target = destination.appendingPathComponent(filename)
+                    try FileManager.default.copyItem(at: source, to: target); copiedFiles.append(target)
+                    let added = ProjectAsset(name: asset.name, relativePath: filename)
+                    assetMapping[asset.id] = added.id; addedAssets.append(added)
+                }
+            } catch {
+                for file in copiedFiles { try? FileManager.default.removeItem(at: file) }
+                self.error = "Could not copy the attached project files: \(error.localizedDescription)"; return
+            }
+        }
+        var inserted: (notes: [String], groups: [String]) = ([], [])
+        let offset = Double(pasteCount + 1) * 36
+        if mutate({ board in
+            board.assets = (board.assets ?? []) + addedAssets
+            inserted = fragment.insert(into: &board, offset: offset, assetIDs: assetMapping)
+        }) {
+            pasteCount += 1
+            selectedNoteIDs = []; selectedNoteID = nil; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+            if inserted.groups.count == 1 { selectedGroupID = inserted.groups[0] }
+            else if inserted.notes.count == 1 { selectedNoteID = inserted.notes[0] }
+            else { selectedNoteIDs = Set(inserted.notes) }
+        } else {
+            for file in copiedFiles { try? FileManager.default.removeItem(at: file) }
+        }
     }
 
     func addGroup() {
@@ -349,9 +470,9 @@ final class BoardViewModel: ObservableObject {
 
 struct WorkspaceView: View {
     @ObservedObject var model: BoardViewModel
+    let agentSession: AgentChatSession
     @AppStorage("showBoardSidebar") private var showBoardSidebar = true
     @AppStorage("showInspector") private var showInspector = true
-    @AppStorage("showAgentChat") private var showAgentChat = false
     @AppStorage("appearanceMode") private var appearanceMode = "system"
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -363,6 +484,7 @@ struct WorkspaceView: View {
     @State private var inlineText = ""
     @State private var inlineSaveTask: Task<Void, Never>?
     @State private var showingDeleteBoard = false
+    @State private var showingDeleteSelection = false
     @State private var showingMCP = false
     @State private var showingProjectFiles = false
     @State private var wallpaperBoard: Board?
@@ -386,7 +508,9 @@ struct WorkspaceView: View {
     @FocusState private var canvasFocused: Bool
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    var body: some View {
+    var body: some View { dialogAndCommandLayer }
+
+    private var canvasRoot: some View {
         VStack(spacing: 0) {
             toolbar(model.board)
             Divider()
@@ -399,10 +523,6 @@ struct WorkspaceView: View {
                     if showInspector {
                         InspectorView(model: model, board: board)
                             .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
-                    }
-                    if showAgentChat {
-                        PiChatView(board: board).id(board.id)
-                            .frame(minWidth: 270, idealWidth: 320, maxWidth: 460)
                     }
                 } else {
                     VStack(spacing: 10) {
@@ -421,8 +541,14 @@ struct WorkspaceView: View {
         .tint(colorScheme == .dark
               ? Color(red: 1.0, green: 0.71, blue: 0.54)
               : Color(red: 0.58, green: 0.25, blue: 0.13))
+    }
+
+    private var dialogAndCommandLayer: some View {
+        canvasRoot
+        .onAppear { registerAuxiliaryWindows() }
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
+        .onReceive(NotificationCenter.default.publisher(for: .requestDeleteSelectionCommand)) { _ in requestDeleteSelection() }
         .onReceive(NotificationCenter.default.publisher(for: .showProjectFiles)) { _ in openProjectFiles() }
         .onReceive(NotificationCenter.default.publisher(for: .wallpaperCommand)) { _ in openWallpaper() }
         .onReceive(NotificationCenter.default.publisher(for: .exportPDFCommand)) { _ in openPDFExport() }
@@ -439,6 +565,12 @@ struct WorkspaceView: View {
         .confirmationDialog("Delete this list?", isPresented: $showingDeleteList) {
             Button("Delete List", role: .destructive) { if let list = listToDelete { model.deleteList(list) }; listToDelete = nil }
         } message: { Text("Boards in the list will remain available.") }
+        .confirmationDialog("Delete \(model.selectionCount) selected objects?", isPresented: $showingDeleteSelection, titleVisibility: .visible) {
+            Button("Delete \(model.selectionCount) Objects", role: .destructive) { model.deleteSelection() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Connections attached to deleted notes are removed too. Undo can restore everything in one step.")
+        }
         .sheet(isPresented: $showingProjectFiles) {
             if let board = model.board {
                 ProjectFilesView(model: model, boardID: board.id)
@@ -485,11 +617,18 @@ struct WorkspaceView: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.primary.opacity(0.08)))
             .padding(.horizontal, 12).padding(.bottom, 8)
-            List(selection: Binding(get: { model.board?.id }, set: { if let id = $0 { model.selectBoard(id) } })) {
+            List {
                 ForEach(model.boardLists) { list in
                     Section {
                         ForEach(model.boards.filter { list.boardIDs.contains($0.id) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })) }) { board in
-                            boardSidebarLabel(board).tag(board.id)
+                            boardSidebarLabel(board)
+                                .contentShape(Rectangle())
+                                .onTapGesture { model.selectBoard(board.id) }
+                                .listRowBackground(Group {
+                                    if model.board?.id == board.id {
+                                        RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor.opacity(0.16))
+                                    }
+                                })
                         }
                     } header: {
                         HStack {
@@ -503,14 +642,26 @@ struct WorkspaceView: View {
                                 .menuStyle(.borderlessButton).fixedSize().help("Edit or delete \(list.title)")
                                 .accessibilityLabel("Actions for \(list.title)")
                         }.foregroundStyle(Color(hex: list.color)).help(list.description)
+                            .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in handleBoardDrop(providers, targetList: list) }
                     }
                 }
-                Section("All boards") {
+                Section {
                 ForEach(model.boards.filter { board in
                     search.isEmpty || board.title.localizedCaseInsensitiveContains(search) || (board.tags ?? []).contains(where: { $0.localizedCaseInsensitiveContains(search) }) || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
                 }) { board in
-                    boardSidebarLabel(board).tag(board.id)
+                    boardSidebarLabel(board)
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.selectBoard(board.id) }
+                        .listRowBackground(Group {
+                            if model.board?.id == board.id {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor.opacity(0.16))
+                            }
+                        })
                 }
+                } header: {
+                    Text("All boards")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in handleBoardDrop(providers, targetList: nil) }
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden)
             HStack(spacing: 9) {
@@ -530,9 +681,79 @@ struct WorkspaceView: View {
 
     func boardSidebarLabel(_ board: Board) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "square.grid.2x2").foregroundStyle(Color(hex: board.color ?? "#7A8BA8"))
+            if let icon = board.icon, !icon.isEmpty {
+                Text(icon).font(.system(size: 15))
+            } else {
+                Image(systemName: "square.grid.2x2").foregroundStyle(Color(hex: board.color ?? "#7A8BA8"))
+            }
             Text(board.title).lineLimit(1)
             if board.flagged == true { Image(systemName: "flag.fill").font(.caption).foregroundStyle(.secondary) }
+        }
+        .onDrag { NSItemProvider(object: board.id as NSString) }
+    }
+
+    /// Drops a dragged board onto a list header (moves it into the list) or onto the
+    /// "All boards" header (removes it from every list). Returns whether the drop is accepted.
+    func handleBoardDrop(_ providers: [NSItemProvider], targetList: BoardList?) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadItem(forTypeIdentifier: "public.utf8-plain-text", options: nil) { item, _ in
+            let boardID: String? = {
+                if let text = item as? String { return text as String }
+                if let data = item as? Data { return String(data: data, encoding: .utf8) }
+                return nil
+            }()
+            Task { @MainActor in
+                guard let boardID else { return }
+                if let targetList, let list = self.model.boardLists.first(where: { $0.id == targetList.id }) {
+                    guard !list.boardIDs.contains(boardID) else { return }
+                    var updated = list
+                    updated.boardIDs.append(boardID)
+                    _ = self.model.saveList(updated)
+                } else if targetList == nil {
+                    for var list in self.model.boardLists where list.boardIDs.contains(boardID) {
+                        list.boardIDs.removeAll { $0 == boardID }
+                        _ = self.model.saveList(list)
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    /// Registers auxiliary window factories with the LIVE model/session instances.
+    /// Doing this in App.init captured pre-@StateObject instances that never updated.
+    func registerAuxiliaryWindows() {
+        let model = self.model
+        let session = self.agentSession
+        AuxiliaryWindowHost.shared.register(id: "agent-chat") {
+            let size = NSSize(width: 400, height: 680)
+            return AuxiliaryWindowHost.makeWindow(
+                title: "Agent chat",
+                content: AgentChatWindow(model: model, session: session),
+                size: size,
+                screenOrigin: AuxiliaryWindowHost.bottomRightOrigin(for: size)
+            )
+        }
+        AuxiliaryWindowHost.shared.register(id: "agent-settings") {
+            AuxiliaryWindowHost.makeWindow(
+                title: "Agent chat settings",
+                content: AgentChatSettingsWindow(model: model, session: session),
+                size: NSSize(width: 460, height: 640)
+            )
+        }
+        AuxiliaryWindowHost.shared.register(id: "mcp-servers") {
+            AuxiliaryWindowHost.makeWindow(
+                title: "MCP servers",
+                content: MCPServersWindow(model: model, session: session),
+                size: NSSize(width: 540, height: 560)
+            )
+        }
+        AuxiliaryWindowHost.shared.register(id: "chat-history") {
+            AuxiliaryWindowHost.makeWindow(
+                title: "Chat history",
+                content: ChatHistoryWindow(model: model, session: session),
+                size: NSSize(width: 480, height: 560)
+            )
         }
     }
 
@@ -573,6 +794,10 @@ struct WorkspaceView: View {
         pdfExportBoard = model.board
     }
 
+    func requestDeleteSelection() {
+        guard model.hasSelection else { return }
+        if model.selectionCount > 1 { showingDeleteSelection = true } else { model.deleteSelection() }
+    }
     func requestGroup() {
         guard model.board != nil else { return }
         if !model.selectedNoteIDs.isEmpty {
@@ -659,14 +884,12 @@ struct WorkspaceView: View {
             .accessibilityLabel(showInspector ? "Hide inspector" : "Show inspector")
             .accessibilityValue(showInspector ? "Visible" : "Hidden")
             .keyboardShortcut("2", modifiers: [.command, .option])
-            Button { showAgentChat.toggle() } label: {
+            Button { AuxiliaryWindowHost.shared.open(id: "agent-chat") } label: {
                 MascotLogo().frame(width: 27, height: 27).padding(3)
-                    .background(showAgentChat ? Color.accentColor.opacity(0.16) : Color.clear, in: Circle())
                     .accessibilityHidden(true)
             }
-            .help(showAgentChat ? "Hide agent chat" : "Show agent chat")
-            .accessibilityLabel(showAgentChat ? "Hide agent chat" : "Show agent chat")
-            .accessibilityValue(showAgentChat ? "Visible" : "Hidden")
+            .help("Open the agent chat window")
+            .accessibilityLabel("Open the agent chat window")
             .disabled(board == nil)
         }
         .buttonStyle(.borderless)
@@ -786,16 +1009,29 @@ struct WorkspaceView: View {
         .focusable()
         .focused($canvasFocused)
         .focusEffectDisabled()
+        .background(CanvasShortcutMonitor { event in
+            guard canvasAcceptsShortcuts else { return false }
+            let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            if modifiers.isEmpty, model.selectedNoteID != nil, event.keyCode == 48 {
+                model.addAdjacentNote(toRight: true); return true
+            }
+            if modifiers.isEmpty, model.selectedNoteID != nil, event.keyCode == 36 || event.keyCode == 76 {
+                model.addAdjacentNote(toRight: false); return true
+            }
+            if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "c", model.hasSelection { model.copySelection(); return true }
+            if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v", NSPasteboard.general.data(forType: canvasClipboardType) != nil { model.pasteSelection(); return true }
+            return false
+        })
         .onKeyPress(.delete) {
             guard model.hasSelection, editingObjectID == nil,
                   !(NSApp.keyWindow?.firstResponder is NSTextView),
                   !(NSApp.keyWindow?.firstResponder is NSTextField) else { return .ignored }
-            model.deleteSelection()
+            requestDeleteSelection()
             return .handled
         }
         .onDeleteCommand {
             guard editingObjectID == nil, !(NSApp.keyWindow?.firstResponder is NSTextView), !(NSApp.keyWindow?.firstResponder is NSTextField) else { return }
-            model.deleteSelection()
+            requestDeleteSelection()
         }
         .simultaneousGesture(MagnificationGesture()
             .onChanged { value in
@@ -804,6 +1040,10 @@ struct WorkspaceView: View {
                 zoom = min(2.0, max(0.5, zoom * Double(factor)))
             }
             .onEnded { _ in pinchMagnification = 1 })
+    }
+
+    private var canvasAcceptsShortcuts: Bool {
+        canvasFocused && editingObjectID == nil && !(NSApp.keyWindow?.firstResponder is NSTextView) && !(NSApp.keyWindow?.firstResponder is NSTextField)
     }
 
     func selectConnection(_ id: String) {
@@ -1382,6 +1622,7 @@ extension Notification.Name {
     static let zoomInCommand = Notification.Name("CoThinkZoomInCommand")
     static let zoomOutCommand = Notification.Name("CoThinkZoomOutCommand")
     static let zoomResetCommand = Notification.Name("CoThinkZoomResetCommand")
+    static let requestDeleteSelectionCommand = Notification.Name("CoThinkRequestDeleteSelection")
 }
 
 struct MCPSetupView: View {

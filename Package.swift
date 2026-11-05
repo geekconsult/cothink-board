@@ -18,6 +18,7 @@ let package = Package(
         .executableTarget(name: "CoThinkMCP", dependencies: ["BoardCore"]),
         .executableTarget(name: "CoThinkPDF", dependencies: ["BoardCore", "BoardPDFRendering"]),
         .testTarget(name: "BoardCoreTests", dependencies: ["BoardCore"]),
-        .testTarget(name: "PiChatCoreTests", dependencies: ["PiChatCore"])
+        .testTarget(name: "PiChatCoreTests", dependencies: ["PiChatCore"]),
+        .testTarget(name: "CoThinkAppTests", dependencies: ["CoThinkApp"])
     ]
 )
