@@ -1081,12 +1081,13 @@ struct WorkspaceView: View {
 
     func boardCanvas(_ board: Board) -> some View {
         let hidden = board.hiddenNoteIDs()
-        let noteRects = board.notes.map { note in
+        let noteRects = board.notes.filter { !hidden.contains($0.id) }.map { note in
             let note = displayed(note)
             return BoardRect(x: note.x, y: note.y, width: note.width, height: note.height)
         }
         let routeRects = board.connections.flatMap { edge -> [BoardRect] in
-            guard let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) else { return [] }
+            guard !hidden.contains(edge.from), !hidden.contains(edge.to),
+                  let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) else { return [] }
             return displayedConnection(edge).controlPoints(from: displayed(from), to: displayed(to)).map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
         }
         let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0) } + routeRects)

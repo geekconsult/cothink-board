@@ -114,14 +114,15 @@ public enum BoardPDFHTML {
         // edges touching a hidden note are excluded. The text sections below stay complete.
         let hidden = board.hiddenNoteIDs()
         let points = board.connections.flatMap { edge -> [ConnectionPoint] in
-            guard let a = notes[edge.from], let b = notes[edge.to] else { return [] }
+            guard let a = notes[edge.from], let b = notes[edge.to], !hidden.contains(edge.from), !hidden.contains(edge.to) else { return [] }
             return edge.controlPoints(from: a, to: b)
         }
-        let minX = min(0, (board.notes.map(\.x) + board.groups.map(\.x) + points.map(\.x)).min() ?? 0) - 35
-        let minY = min(0, (board.notes.map(\.y) + board.groups.map(\.y) + points.map(\.y)).min() ?? 0) - 35
-        let right = max(500, (board.notes.map { $0.x + $0.width } + board.groups.map { $0.x + $0.width } + points.map(\.x)).max() ?? 0) + 35
-        let bottom = max(280, (board.notes.map { $0.y + $0.height } + board.groups.map { $0.y + $0.height } + points.map(\.y)).max() ?? 0) + 35
-        let bounds = board.notes.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } + board.groups.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } + points.map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
+        let visibleNotes = board.notes.filter { !hidden.contains($0.id) }
+        let minX = min(0, (visibleNotes.map(\.x) + board.groups.map(\.x) + points.map(\.x)).min() ?? 0) - 35
+        let minY = min(0, (visibleNotes.map(\.y) + board.groups.map(\.y) + points.map(\.y)).min() ?? 0) - 35
+        let right = max(500, (visibleNotes.map { $0.x + $0.width } + board.groups.map { $0.x + $0.width } + points.map(\.x)).max() ?? 0) + 35
+        let bottom = max(280, (visibleNotes.map { $0.y + $0.height } + board.groups.map { $0.y + $0.height } + points.map(\.y)).max() ?? 0) + 35
+        let bounds = visibleNotes.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } + board.groups.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } + points.map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
         let extent = BoardRect.canvasExtent(containing: bounds)
         var background = ""
         if board.wallpaperColor != nil || board.wallpaperAssetID != nil {
