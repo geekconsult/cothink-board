@@ -21,6 +21,7 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 - **Project files:** keep images, PDFs, and other files in a board's file library; attach them to notes and open them from the canvas.
 - **Per-board wallpaper:** choose a canvas color, add an image, and adjust image strength without changing other boards.
 - **An agent that sees the graph:** the local MCP server exposes notes, groups, connections, labels, directions, positions, attached files, and list context. Agents can also make revision-checked edits.
+- **Pi agent chat and voice:** talk or type to a board-scoped Pi agent, review its tool activity, and optionally hear replies aloud.
 - **A native macOS workspace:** light, dark, and system appearance; hideable panels; trackpad pinch zoom; keyboard shortcuts; automatic saving; shared undo and redo.
 - **Portable board data:** export a board as JSON and import it later. Project file contents and list membership are stored separately; see [Data and backups](#data-and-backups).
 - **PDF reports:** preview and export a board using one of three HTML-based templates, with an overview, full note text, relationships, and supported attached images.
@@ -39,13 +40,39 @@ If you skipped the login prompt, launch the installed Pi in Terminal with `~/.lo
 
 ## Agent chat with Pi
 
-Open the chat panel with the speech-bubble button in the toolbar. Use the gear menu to set the Pi executable and chat text size. Chat messages render Markdown. Choose the installed `pi` executable or enter its absolute path, then connect. CoThink starts Pi in RPC mode with its existing model and credentials. It exposes the complete CoThink MCP tool catalog, including board, list, file, history, and export operations. Tools with a `board_id` argument are bound to the selected board. Other MCP tools retain their normal arguments. A request may be sent to the model provider configured in Pi.
+Open a board and select the **agent chat** button in the toolbar. CoThink connects the Pi coding agent to the open board. In the floating chat window, type a request such as “Summarize this board and suggest the next step.” Pi can read the board's notes and connections, answer questions, and use CoThink's MCP tools to make requested changes. The conversation shows Pi's response and tool activity; the canvas refreshes after saved changes.
 
-Each board uses its own local Pi conversation in the CoThink data directory. Switching boards or hiding the panel stops the Pi subprocess; reopening resumes the saved conversation. CoThink does not modify Pi's configuration. It disables Pi's built-in tools, automatic extensions, skills and context files for this session, and loads only its bundled CoThink bridge. Some board tools can read project files or write exports when requested. The chat shows when Pi is thinking, writing, or running a tool. Failed tools include the MCP error details in the transcript, and Pi's own response errors appear there too. Thinking status is shown without exposing private reasoning text. The Stop button sends an abort request; an already-started board operation may still complete.
+<img src="docs/images/pi-agent-chat.png" width="400" alt="Pi agent chat showing a request, a CoThink board-context tool call, and a response">
 
-Pi must support RPC mode and extension tools. The integration was checked with Pi 0.73.1. Configure an available model and credentials in Pi before connecting. If Pi is installed outside a standard bin directory, use Choose or paste its absolute path in chat settings. Chat is not available when Pi, its model, or the bundled MCP server cannot start.
+*Example conversation on a demonstration board using a local mock model.*
+
+1. Open **Agent chat settings** (the gear) to choose or check the Pi executable, connect or disconnect, select an available model, and adjust the chat text size. See [Sign in to a model provider](#sign-in-to-a-model-provider) for first-time setup.
+2. Ask Pi to explain, organize, or update the open board. Requests are sent to the model provider configured in Pi. Tool calls can read board context and, when requested, modify the board, read project files, or write exports.
+3. Use **Chat history** to start a new conversation or reopen an earlier session for the current board. The settings window also has a per-board **Agent memory** editor for facts and preferences to include in that board's future sessions.
+4. Use **MCP Servers…** in settings to import or configure additional MCP servers. Their tools are bridged into Pi with a server-name prefix; changes apply to the next chat session.
+
+Each board's Pi sessions and memory are stored locally under the CoThink data directory. The chat window shares its session with the settings and history windows; switching to a different board connects Pi to that board's session. CoThink starts Pi in RPC mode with its configured model and credentials, disables Pi's built-in tools and automatic extensions, skills, and context files, and loads the CoThink bridge. CoThink's board tools with a `board_id` argument are bound to the open board; other CoThink tools and configured external MCP servers have their own arguments.
+
+The transcript reports tool failures and Pi response errors. **Stop** requests cancellation, but an operation already dispatched to a tool may still finish. Pi must support RPC mode and extension tools; the integration was checked with Pi 0.73.1.
 
 To run the isolated Pi integration test with a local mock model after `swift build`, set `PI_BIN` to a Pi executable and run `python3 scripts/test-pi-e2e.py`. No provider credentials or live model calls are used by that test.
+
+## Voice mode
+
+Voice mode is part of Pi agent chat: Apple Speech transcribes speech, and Pi interprets the request and uses the available tools. Jev is an **optional speech filter**; it does not edit the board itself.
+
+<img src="docs/images/pi-voice-mode.png" width="400" alt="Voice mode with the microphone paused, Jev filter and spoken reply controls">
+
+*Voice mode on the demonstration board, with the microphone paused.*
+
+1. Open a board and connect agent chat to Pi. Use the globe beside the message field to choose **Automatic**, **ไทย**, or **English (US)** for dictation.
+2. Select **Voice mode** (the waveform button). Allow macOS microphone and speech-recognition access if prompted, then speak a request. The live transcript is sent to Pi after about two seconds without new speech.
+3. Use the microphone button to pause or resume. **Speak replies** controls whether Pi's answers are read aloud using macOS speech synthesis. Select the × button to exit Voice mode.
+4. The microphone button beside the text field also starts dictation from the regular chat window. The same silence-based sending and optional filter apply there.
+
+In **Agent chat settings → Voice**, enter a TypeSafe API key and enable **Filter commands with Jev** to screen out speech unrelated to board work. With the filter enabled and a key set, transcribed utterances are sent to TypeSafe for classification; accepted utterances are then sent to Pi. Without a key, or if the filter cannot be reached, speech is sent to Pi without filtering. You can also toggle **Jev filter** inside Voice mode. Apple Speech handles recognition; availability and whether recognition uses an online service depend on macOS and the selected language.
+
+For a Bluetooth headset, select its microphone as the macOS sound input. If the audio device changes while listening, CoThink may show **Reconnecting microphone…** briefly; pause and restart the mic if it cannot reconnect.
 
 ## How it works
 
