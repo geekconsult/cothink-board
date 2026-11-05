@@ -315,4 +315,237 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertNotEqual(copy.id, b.id)
         XCTAssertEqual(try s.list().count, 2)
     }
+
+    // MARK: Mindmap tree layer (wave 1)
+
+    func assertError(_ error: Error, _ expected: BoardError, file: StaticString = #filePath, line: UInt = #line) {
+        switch (error as? BoardError, expected) {
+        case (.notFound, .notFound), (.conflict, .conflict), (.noUndo, .noUndo), (.noRedo, .noRedo):
+            break
+        case (.invalid(let got), .invalid(let want)):
+            XCTAssertEqual(got, want, file: file, line: line)
+        default:
+            XCTFail("\(error) is not \(expected)", file: file, line: line)
+        }
+    }
+    func invalidReason(of error: Error) -> String {
+        guard case BoardError.invalid(let reason) = error else { return "not invalid: \(error)" }
+        return reason
+    }
+
+    func testParentIDRoundTripsAndLegacyJSONDecodesNil() throws {
+        let json = """
+        {"version":1,"id":"old","title":"Old","revision":0,"notes":[{"id":"n1","text":"Note","x":10,"y":20,"width":200,"height":100,"color":"#FFFFFF"},{"id":"n2","text":"Other","x":400,"y":20,"width":100,"height":60,"color":"#FFFFFF"}],"connections":[{"id":"c","from":"n1","to":"n2","arrow":true}],"groups":[]}
+        """
+        let legacy = try JSONDecoder().decode(Board.self, from: Data(json.utf8))
+        XCTAssertNil(legacy.notes[0].parentID)
+        XCTAssertNil(legacy.notes[1].parentID)
+        var board = Board(notes: [Note(id: "n1"), Note(id: "n2")])
+        board.notes[1].parentID = "n1"
+        let store = try store()
+        let saved = try store.importBoard(board, actor: "test")
+        let reloaded = try store.get(saved.id)
+        XCTAssertEqual(reloaded.notes[1].parentID, "n1")
+        XCTAssertNil(reloaded.notes[0].parentID)
+        let encoded = try JSONEncoder().encode(reloaded)
+        XCTAssertEqual(try JSONDecoder().decode(Board.self, from: encoded), reloaded)
+        XCTAssertTrue(String(data: encoded, encoding: .utf8)!.contains("\"parentID\""))
+    }
+
+    func testValidateRejectsMissingSelfAndCyclicParents() throws {
+        let store = try store()
+        let saved = try store.importBoard(Board(notes: [Note(id: "n1"), Note(id: "n2")]), actor: "test")
+        XCTAssertEqual(try store.list().count, 1)
+        var broken = saved
+        broken.notes[0].parentID = "ghost"
+        XCTAssertThrowsError(try store.importBoard(broken, actor: "test")) { XCTAssertEqual(invalidReason(of: $0), "note parent") }
+        XCTAssertThrowsError(try store.replace(broken, expectedRevision: saved.revision, actor: "test")) { XCTAssertEqual(invalidReason(of: $0), "note parent") }
+        broken = saved
+        broken.notes[0].parentID = "n1"
+        XCTAssertThrowsError(try store.importBoard(broken, actor: "test")) { XCTAssertEqual(invalidReason(of: $0), "note parent cycle") }
+        XCTAssertThrowsError(try store.replace(broken, expectedRevision: saved.revision, actor: "test")) { XCTAssertEqual(invalidReason(of: $0), "note parent cycle") }
+        broken = saved
+        broken.notes[0].parentID = "n2"
+        broken.notes[1].parentID = "n1"
+        XCTAssertThrowsError(try store.importBoard(broken, actor: "test")) { XCTAssertEqual(invalidReason(of: $0), "note parent cycle") }
+        XCTAssertThrowsError(try store.replace(broken, expectedRevision: saved.revision, actor: "test")) { XCTAssertEqual(invalidReason(of: $0), "note parent cycle") }
+        XCTAssertEqual(try store.list().count, 1)
+        XCTAssertEqual(try store.get(saved.id), saved)
+    }
+
+    func testSetParentMovesDetachesAndRejectsCycles() throws {
+        var board = Board(notes: [Note(id: "r"), Note(id: "a"), Note(id: "b"), Note(id: "c"), Note(id: "z", x: 3000, y: 3000)])
+        try board.setNoteParent("a", to: "r")
+        try board.setNoteParent("b", to: "a")
+        try board.setNoteParent("c", to: "b")
+        XCTAssertEqual(board.parent(of: "a")?.id, "r")
+        XCTAssertEqual(board.children(of: "a").map(\.id), ["b"])
+        XCTAssertEqual(board.descendantIDs(of: "r"), ["a", "b", "c"])
+        XCTAssertTrue(board.isTreeLinked(noteID: "c"))
+        XCTAssertFalse(board.isTreeLinked(noteID: "z"))
+        let before = board
+        XCTAssertThrowsError(try board.setNoteParent("missing", to: "r")) { assertError($0, .notFound) }
+        XCTAssertThrowsError(try board.setNoteParent("a", to: "missing")) { assertError($0, .notFound) }
+        XCTAssertThrowsError(try board.setNoteParent("a", to: "a")) { assertError($0, .invalid("self parent")) }
+        XCTAssertThrowsError(try board.setNoteParent("b", to: "c")) { assertError($0, .invalid("cycle")) }
+        XCTAssertThrowsError(try board.setNoteParent("r", to: "c")) { assertError($0, .invalid("cycle")) }
+        XCTAssertEqual(board, before)
+        try board.setNoteParent("b", to: "r")
+        XCTAssertEqual(board.notes.first { $0.id == "b" }?.parentID, "r")
+        XCTAssertEqual(board.children(of: "a").map(\.id), [])
+        try board.setNoteParent("b", to: nil)
+        XCTAssertNil(board.notes.first { $0.id == "b" }?.parentID)
+    }
+
+    func testDeleteNotesPromotesToNearestSurviving() {
+        func chainBoard() -> Board {
+            var board = Board(notes: [Note(id: "r"), Note(id: "a"), Note(id: "b"), Note(id: "c")])
+            board.notes[1].parentID = "r"
+            board.notes[2].parentID = "a"
+            board.notes[3].parentID = "b"
+            board.connections = [Connection(id: "ra", from: "r", to: "a"), Connection(id: "bc", from: "b", to: "c")]
+            var group = BoardGroup(id: "g")
+            group.memberIDs = ["r", "a"]
+            board.groups = [group]
+            return board
+        }
+        func parentID(_ id: String, in board: Board) -> String? {
+            board.notes.first { $0.id == id }?.parentID
+        }
+        var board = chainBoard()
+        board.deleteNotes(["a"])
+        XCTAssertEqual(board.notes.map(\.id), ["r", "b", "c"])
+        XCTAssertEqual(parentID("b", in: board), "r")
+        XCTAssertEqual(parentID("c", in: board), "b")
+        XCTAssertEqual(board.connections.map(\.id), ["bc"])
+        XCTAssertEqual(board.groups[0].memberIDs, ["r"])
+        board = chainBoard()
+        board.deleteNotes(["a", "b"])
+        XCTAssertEqual(board.notes.map(\.id), ["r", "c"])
+        XCTAssertEqual(parentID("c", in: board), "r")
+        XCTAssertEqual(board.connections.map(\.id), [])
+        XCTAssertEqual(board.groups[0].memberIDs, ["r"])
+        board = chainBoard()
+        board.deleteNotes(["r"])
+        XCTAssertEqual(board.notes.map(\.id), ["a", "b", "c"])
+        XCTAssertNil(parentID("a", in: board))
+        XCTAssertEqual(parentID("b", in: board), "a")
+        XCTAssertEqual(parentID("c", in: board), "b")
+        XCTAssertEqual(board.connections.map(\.id), ["bc"])
+        XCTAssertEqual(board.groups[0].memberIDs, ["a"])
+    }
+
+    func testSelectionMoveCarriesSubtreeAndLockedGroups() {
+        func family() -> Board {
+            var board = Board(notes: [Note(id: "p", x: 100, y: 100), Note(id: "c1", x: 300, y: 300), Note(id: "c2", x: 500, y: 500), Note(id: "u", x: 800, y: 80)])
+            board.notes[1].parentID = "p"
+            board.notes[2].parentID = "p"
+            var group = BoardGroup(id: "g", x: 80, y: 80)
+            group.memberIDs = ["c2", "u"]
+            board.groups = [group]
+            return board
+        }
+        var board = family()
+        board.moveSelection(noteIDs: ["p"], dx: 100, dy: 50)
+        XCTAssertEqual(board.notes.first { $0.id == "p" }?.x, 200); XCTAssertEqual(board.notes.first { $0.id == "p" }?.y, 150)
+        XCTAssertEqual(board.notes.first { $0.id == "c1" }?.x, 400); XCTAssertEqual(board.notes.first { $0.id == "c1" }?.y, 350)
+        XCTAssertEqual(board.notes.first { $0.id == "c2" }?.x, 600); XCTAssertEqual(board.notes.first { $0.id == "c2" }?.y, 550)
+        XCTAssertEqual(board.notes.first { $0.id == "u" }?.x, 900); XCTAssertEqual(board.notes.first { $0.id == "u" }?.y, 130)
+        XCTAssertEqual(board.groups[0].x, 180); XCTAssertEqual(board.groups[0].y, 130)
+        board = family()
+        board.moveSelection(noteIDs: ["p"], dx: -500, dy: -500)
+        XCTAssertEqual(board.notes.first { $0.id == "p" }?.x, 20); XCTAssertEqual(board.notes.first { $0.id == "p" }?.y, 20)
+        XCTAssertEqual(board.notes.first { $0.id == "c1" }?.x, 220); XCTAssertEqual(board.notes.first { $0.id == "c1" }?.y, 220)
+        XCTAssertEqual(board.notes.first { $0.id == "c2" }?.x, 420); XCTAssertEqual(board.notes.first { $0.id == "c2" }?.y, 420)
+        XCTAssertEqual(board.notes.first { $0.id == "u" }?.x, 720); XCTAssertEqual(board.notes.first { $0.id == "u" }?.y, 0)
+        XCTAssertEqual(board.groups[0].x, 0); XCTAssertEqual(board.groups[0].y, 0)
+    }
+
+    func testMindmapLayoutDeterministicOverlapFree() {
+        func familyBoard() -> Board {
+            var board = Board(notes: [
+                Note(id: "r", x: 100, y: 100, width: 200, height: 80),
+                Note(id: "a", x: 900, y: 40, width: 200, height: 80),
+                Note(id: "b", x: 700, y: 40, width: 200, height: 80),
+                Note(id: "a1", x: 1300, y: 800, width: 200, height: 80),
+                Note(id: "solo", x: 2000, y: 1000, width: 200, height: 80),
+            ])
+            board.notes[1].parentID = "r"
+            board.notes[2].parentID = "r"
+            board.notes[3].parentID = "a"
+            return board
+        }
+        let board = familyBoard()
+        let first = board.mindmapLayout(rootID: "r")
+        let second = board.mindmapLayout(rootID: "r")
+        XCTAssertEqual(first.mapValues { [$0.x, $0.y] }, second.mapValues { [$0.x, $0.y] })
+        XCTAssertEqual(Set(first.keys), ["a", "b", "a1"])
+        // a and b share a pre-layout y, so array index breaks the tie: a stacks above b.
+        // Subtree heights are 80, so the 184-tall block centers on r's center (140): a(48), b(152).
+        XCTAssertEqual(first["a"]?.x, 360); XCTAssertEqual(first["a"]?.y, 48)
+        XCTAssertEqual(first["b"]?.x, 360); XCTAssertEqual(first["b"]?.y, 152)
+        XCTAssertEqual(first["a1"]?.x, 620); XCTAssertEqual(first["a1"]?.y, 48)
+        let spread = board.mindmapLayout(rootID: "r", gapX: 100, gapY: 10)
+        XCTAssertEqual(spread["a"]?.x, 400); XCTAssertEqual(spread["a"]?.y, 55)
+        XCTAssertEqual(spread["b"]?.x, 400); XCTAssertEqual(spread["b"]?.y, 145)
+        XCTAssertEqual(spread["a1"]?.x, 700); XCTAssertEqual(spread["a1"]?.y, 55)
+        let rects = first.values.map { BoardRect(x: $0.x, y: $0.y, width: 200, height: 80) }
+        for (index, rect) in rects.enumerated() {
+            for other in rects[(index + 1)...] {
+                let disjoint = rect.x + rect.width <= other.x || other.x + other.width <= rect.x
+                    || rect.y + rect.height <= other.y || other.y + other.height <= rect.y
+                XCTAssertTrue(disjoint, "\(rect) overlaps \(other)")
+            }
+        }
+        var tidied = familyBoard()
+        tidied.tidySubtree(rootID: "r")
+        XCTAssertEqual(tidied.notes.first { $0.id == "r" }?.x, 100); XCTAssertEqual(tidied.notes.first { $0.id == "r" }?.y, 100)
+        XCTAssertEqual(tidied.notes.first { $0.id == "a" }?.x, 360); XCTAssertEqual(tidied.notes.first { $0.id == "a" }?.y, 48)
+        XCTAssertEqual(tidied.notes.first { $0.id == "b" }?.x, 360); XCTAssertEqual(tidied.notes.first { $0.id == "b" }?.y, 152)
+        XCTAssertEqual(tidied.notes.first { $0.id == "a1" }?.x, 620); XCTAssertEqual(tidied.notes.first { $0.id == "a1" }?.y, 48)
+        XCTAssertEqual(tidied.notes.first { $0.id == "solo" }?.x, 2000); XCTAssertEqual(tidied.notes.first { $0.id == "solo" }?.y, 1000)
+        let once = tidied
+        tidied.tidySubtree(rootID: "r")
+        XCTAssertEqual(tidied, once)
+    }
+
+    func testFragmentPasteDropsParentOutsideCopy() {
+        var board = Board(notes: [Note(id: "p"), Note(id: "k")])
+        board.notes[1].parentID = "p"
+        let childOnly = BoardFragment.capture(from: board, noteIDs: ["k"], groupID: nil, connectionID: nil)
+        XCTAssertEqual(childOnly.notes.map(\.id), ["k"])
+        childOnly.insert(into: &board, offset: 36)
+        XCTAssertEqual(board.notes.count, 3)
+        XCTAssertNil(board.notes[2].parentID)
+        let pair = BoardFragment.capture(from: board, noteIDs: ["p", "k"], groupID: nil, connectionID: nil)
+        pair.insert(into: &board, offset: 36)
+        XCTAssertEqual(board.notes.count, 5)
+        XCTAssertNil(board.notes[3].parentID)
+        XCTAssertEqual(board.notes[4].parentID, board.notes[3].id)
+    }
+
+    func testTidySubtreeScopeAndIdempotence() {
+        var board = Board(notes: [Note(id: "r1", x: 0, y: 0), Note(id: "c1", x: 1000, y: 1000), Note(id: "r2", x: 50, y: 900), Note(id: "c2", x: 2000, y: 2000)])
+        board.notes[1].parentID = "r1"
+        board.notes[3].parentID = "r2"
+        board.tidySubtree(rootID: "r1")
+        XCTAssertEqual(board.notes.first { $0.id == "r1" }?.x, 0); XCTAssertEqual(board.notes.first { $0.id == "r1" }?.y, 0)
+        XCTAssertEqual(board.notes.first { $0.id == "c1" }?.x, 260); XCTAssertEqual(board.notes.first { $0.id == "c1" }?.y, 0)
+        XCTAssertEqual(board.notes.first { $0.id == "r2" }?.x, 50); XCTAssertEqual(board.notes.first { $0.id == "r2" }?.y, 900)
+        XCTAssertEqual(board.notes.first { $0.id == "c2" }?.x, 2000); XCTAssertEqual(board.notes.first { $0.id == "c2" }?.y, 2000)
+        let scoped = board
+        board.tidySubtree(rootID: "r1")
+        board.tidySubtree(rootID: "missing")
+        XCTAssertEqual(board, scoped)
+        board.tidySubtree(rootID: nil)
+        XCTAssertEqual(board.notes.first { $0.id == "c2" }?.x, 310); XCTAssertEqual(board.notes.first { $0.id == "c2" }?.y, 900)
+        let once = board
+        board.tidySubtree(rootID: nil)
+        XCTAssertEqual(board, once)
+        board.notes.append(Note(id: "solo", x: 1234, y: 4321))
+        let quiet = board
+        board.tidySubtree(rootID: "solo")
+        board.tidySubtree(rootID: "missing")
+        XCTAssertEqual(board, quiet)
+    }
 }

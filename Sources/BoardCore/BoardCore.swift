@@ -61,10 +61,12 @@ public struct Note: Codable, Identifiable, Equatable {
     public var strokeStyle: LineStyle?
     public var imagePath: String?
     public var assetIDs: [String]?
-    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil) {
+    public var parentID: String?
+    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil) {
         self.id = id; self.text = text; self.x = x; self.y = y; self.width = width; self.height = height; self.color = color
         self.imagePath = imagePath
         self.assetIDs = []
+        self.parentID = parentID
     }
 }
 public struct ProjectAsset: Codable, Identifiable, Equatable {
@@ -160,6 +162,7 @@ public struct BoardFragment: Codable {
             note.id = mapping[note.id]!
             note.x += offset; note.y += offset
             note.assetIDs = note.assetIDs?.map { assetIDs[$0] ?? $0 }
+            note.parentID = note.parentID.flatMap { mapping[$0] }
             newNotes.append(note)
         }
         var newGroups: [BoardGroup] = []
@@ -208,15 +211,37 @@ public extension Board {
         groups.last { $0.memberIDs?.contains(noteID) == true }
     }
 
-    // A selection that includes a locked note moves its whole group once.
+    // A selection that includes a locked note moves its whole group once, and every
+    // selected note drags its subtree; group and descendant expansion compose to a
+    // fixed point, and the clamp is computed over the final expanded set.
     func selectionMovement(noteIDs: Set<String>, dx: Double, dy: Double) -> (noteIDs: Set<String>, groupIDs: Set<String>, dx: Double, dy: Double) {
-        let groupIDs = Set(groups.filter { !Set($0.memberIDs ?? []).isDisjoint(with: noteIDs) }.map(\.id))
-        let allNotes = noteIDs.union(groups.filter { groupIDs.contains($0.id) }.flatMap { $0.memberIDs ?? [] })
-        let movingNotes = notes.filter { allNotes.contains($0.id) }
+        var childOf: [String: [String]] = [:]
+        for note in notes {
+            guard let parentID = note.parentID else { continue }
+            childOf[parentID, default: []].append(note.id)
+        }
+        func descendants(of ids: Set<String>) -> Set<String> {
+            var found: Set<String> = []
+            var stack = ids.flatMap { childOf[$0] ?? [] }
+            while let id = stack.popLast() {
+                if found.insert(id).inserted { stack.append(contentsOf: childOf[id] ?? []) }
+            }
+            return found
+        }
+        var selected = noteIDs
+        var groupIDs: Set<String> = []
+        while true {
+            let touching = groups.filter { !Set($0.memberIDs ?? []).isDisjoint(with: selected) }
+            groupIDs = Set(touching.map(\.id))
+            let expanded = selected.union(touching.flatMap { $0.memberIDs ?? [] }).union(descendants(of: selected))
+            if expanded == selected { break }
+            selected = expanded
+        }
+        let movingNotes = notes.filter { selected.contains($0.id) }
         let movingGroups = groups.filter { groupIDs.contains($0.id) }
         let minX = (movingNotes.map(\.x) + movingGroups.map(\.x)).min() ?? 0
         let minY = (movingNotes.map(\.y) + movingGroups.map(\.y)).min() ?? 0
-        return (allNotes, groupIDs, max(-minX, dx), max(-minY, dy))
+        return (selected, groupIDs, max(-minX, dx), max(-minY, dy))
     }
 
     mutating func moveSelection(noteIDs: Set<String>, dx: Double, dy: Double) {
@@ -243,6 +268,146 @@ public extension Board {
             notes[i].x += delta.dx; notes[i].y += delta.dy
         }
         return true
+    }
+
+    func parent(of noteID: String) -> Note? {
+        guard let note = notes.first(where: { $0.id == noteID }), let parentID = note.parentID else { return nil }
+        return notes.first { $0.id == parentID }
+    }
+
+    // Display order: y ascending, then notes-array order.
+    func children(of noteID: String) -> [Note] {
+        notes.enumerated().filter { $0.element.parentID == noteID }
+            .sorted { lhs, rhs in lhs.element.y != rhs.element.y ? lhs.element.y < rhs.element.y : lhs.offset < rhs.offset }
+            .map(\.element)
+    }
+
+    // Reachable downward through parentID links, excluding the note itself.
+    func descendantIDs(of noteID: String) -> Set<String> {
+        var childrenOf: [String: [String]] = [:]
+        for note in notes {
+            guard let parentID = note.parentID else { continue }
+            childrenOf[parentID, default: []].append(note.id)
+        }
+        var found: Set<String> = []
+        var stack = childrenOf[noteID] ?? []
+        while let id = stack.popLast() {
+            if found.insert(id).inserted { stack.append(contentsOf: childrenOf[id] ?? []) }
+        }
+        return found
+    }
+
+    func isTreeLinked(noteID: String) -> Bool {
+        guard let note = notes.first(where: { $0.id == noteID }) else { return false }
+        return note.parentID != nil || notes.contains { $0.parentID == noteID }
+    }
+
+    // Re-links a note under another note; refuses self and ancestor targets so the
+    // parent graph stays a forest. Mutates nothing when it throws.
+    mutating func setNoteParent(_ childID: String, to parentID: String?) throws {
+        guard let index = notes.firstIndex(where: { $0.id == childID }) else { throw BoardError.notFound }
+        if let parentID {
+            guard notes.contains(where: { $0.id == parentID }) else { throw BoardError.notFound }
+            guard parentID != childID else { throw BoardError.invalid("self parent") }
+            guard !descendantIDs(of: childID).contains(parentID) else { throw BoardError.invalid("cycle") }
+        }
+        notes[index].parentID = parentID
+    }
+
+    // Removes notes plus their connections and group memberships; children of deleted
+    // notes are promoted to the nearest surviving pre-delete ancestor.
+    mutating func deleteNotes(_ ids: Set<String>) {
+        let parentByID = Dictionary(notes.map { ($0.id, $0.parentID) }, uniquingKeysWith: { first, _ in first })
+        var promoted: [String: String?] = [:]
+        for note in notes where !ids.contains(note.id) {
+            guard let parentID = note.parentID, ids.contains(parentID) else { continue }
+            var cursor = parentByID[parentID] ?? nil
+            while let ancestor = cursor, ids.contains(ancestor) { cursor = parentByID[ancestor] ?? nil }
+            promoted[note.id] = cursor
+        }
+        notes.removeAll { ids.contains($0.id) }
+        connections.removeAll { ids.contains($0.from) || ids.contains($0.to) }
+        for index in groups.indices { groups[index].memberIDs?.removeAll { ids.contains($0) } }
+        for index in notes.indices {
+            guard let newParent = promoted[notes[index].id] else { continue }
+            notes[index].parentID = newParent
+        }
+    }
+
+    // Tidy tree layout for one subtree: children stack to the right of their parent,
+    // each centered over its own subtree slot, siblings ordered by current y then
+    // array index. Pure; the root keeps its position and is excluded from the result.
+    func mindmapLayout(rootID: String, gapX: Double = 60, gapY: Double = 24) -> [String: (x: Double, y: Double)] {
+        guard let root = notes.first(where: { $0.id == rootID }) else { return [:] }
+        var byID: [String: Note] = [:]
+        var childEntries: [String: [(y: Double, index: Int, id: String)]] = [:]
+        for (index, note) in notes.enumerated() {
+            byID[note.id] = note
+            guard let parentID = note.parentID else { continue }
+            childEntries[parentID, default: []].append((note.y, index, note.id))
+        }
+        var childrenOf: [String: [String]] = [:]
+        for (parentID, entries) in childEntries {
+            childrenOf[parentID] = entries.sorted { $0.y != $1.y ? $0.y < $1.y : $0.index < $1.index }.map(\.id)
+        }
+        var seen: Set<String> = [rootID]
+        var order: [String] = []
+        var stack: [String] = [rootID]
+        while let id = stack.popLast() {
+            order.append(id)
+            for child in childrenOf[id] ?? [] where !seen.contains(child) {
+                seen.insert(child)
+                stack.append(child)
+            }
+        }
+        var subtreeHeight: [String: Double] = [:]
+        for id in order.reversed() {
+            guard let note = byID[id] else { continue }
+            let kids = (childrenOf[id] ?? []).filter { seen.contains($0) }
+            var block: Double = 0
+            for (offset, child) in kids.enumerated() {
+                if offset > 0 { block += gapY }
+                block += subtreeHeight[child] ?? byID[child]?.height ?? 0
+            }
+            subtreeHeight[id] = max(note.height, block)
+        }
+        var spot: [String: (x: Double, y: Double)] = [rootID: (root.x, root.y)]
+        for id in order {
+            guard let note = byID[id], let (x, y) = spot[id] else { continue }
+            let kids = (childrenOf[id] ?? []).filter { seen.contains($0) }
+            guard !kids.isEmpty else { continue }
+            let blockHeight = kids.reduce(0.0) { $0 + (subtreeHeight[$1] ?? 0) } + gapY * Double(kids.count - 1)
+            var top = y + note.height / 2 - blockHeight / 2
+            for child in kids {
+                guard let childNote = byID[child] else { continue }
+                let childHeight = subtreeHeight[child] ?? childNote.height
+                spot[child] = (x + note.width + gapX, top + childHeight / 2 - childNote.height / 2)
+                top += childHeight + gapY
+            }
+        }
+        spot.removeValue(forKey: rootID)
+        return spot
+    }
+
+    // Applies mindmapLayout to one subtree, or with nil to every tree root in one
+    // compute-then-apply pass. Childless roots and free-form notes never move, so the
+    // pass is idempotent: sibling order is read before anything moves.
+    mutating func tidySubtree(rootID: String?) {
+        var layouts: [String: (x: Double, y: Double)] = [:]
+        if let rootID {
+            guard notes.contains(where: { $0.id == rootID }) else { return }
+            layouts = mindmapLayout(rootID: rootID)
+        } else {
+            let parented = Set(notes.compactMap(\.parentID))
+            for root in notes.filter({ $0.parentID == nil && parented.contains($0.id) }).map(\.id) {
+                layouts.merge(mindmapLayout(rootID: root), uniquingKeysWith: { _, second in second })
+            }
+        }
+        guard !layouts.isEmpty else { return }
+        for index in notes.indices {
+            guard let spot = layouts[notes[index].id] else { continue }
+            notes[index].x = spot.x; notes[index].y = spot.y
+        }
     }
 }
 
@@ -413,6 +578,16 @@ public final class BoardStore {
             guard let members = group.memberIDs else { return true }
             return Set(members).count == members.count && members.allSatisfy(noteIDs.contains)
         }) else { throw BoardError.invalid("group members") }
+        guard b.notes.allSatisfy({ $0.parentID == nil || noteIDs.contains($0.parentID!) }) else { throw BoardError.invalid("note parent") }
+        let parentByID = Dictionary(b.notes.map { ($0.id, $0.parentID) }, uniquingKeysWith: { first, _ in first })
+        for note in b.notes {
+            var visited: Set<String> = []
+            var cursor: String? = note.id
+            while let id = cursor {
+                guard visited.insert(id).inserted else { throw BoardError.invalid("note parent cycle") }
+                cursor = parentByID[id] ?? nil
+            }
+        }
         guard b.connections.allSatisfy({ noteIDs.contains($0.from) && noteIDs.contains($0.to) && $0.from != $0.to }) else { throw BoardError.invalid("connection endpoints") }
         guard b.notes.allSatisfy({ [$0.x,$0.y,$0.width,$0.height].allSatisfy(\.isFinite) && $0.width > 0 && $0.height > 0 }), b.groups.allSatisfy({ [$0.x,$0.y,$0.width,$0.height].allSatisfy(\.isFinite) && $0.width > 0 && $0.height > 0 }) else { throw BoardError.invalid("geometry") }
     }
