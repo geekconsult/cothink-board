@@ -40,7 +40,7 @@ You drive boards through the CoThink tools. Every board change runs the same **r
 - `add_child_note` — grow the tree; the server mints the id and places the child right of its parent, stacked under existing children. Prefer it over `edit_board` for tree growth.
 - `set_note_parent` — attach, reparent, or detach (`parent_id: null`); refuses self-parents and cycles.
 - `tidy_tree_layout` — right-growing mindmap layout; `root_id` tidies one subtree, omit it for every tree. The root never moves; unlinked notes never move.
-- Reading a tree: `get_board_context` shows `parent_note_id` and `child_note_ids` per note; verify tree shape there.
+- Reading a tree: `get_board_context` shows `parent_note_id`, `child_note_ids`, and `collapsed` per note; verify tree shape there. A folded note hides its subtree from the canvas and from `capture_board`/PDF overviews (folded cards carry a `+N` marker) while `get_board_context` still lists every note; fold or unfold through `edit_board` note ops with `collapsed` (true/null).
 - Deleting a note promotes its children to the nearest surviving ancestor. Groups and tree links are independent: a note can be a group member and a tree child at once.
 
 **Appearance**

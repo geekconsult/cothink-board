@@ -136,6 +136,16 @@ assert {n['id']:(n['x'],n['y']) for n in tidied2['notes']}==pos
 r,e=call(244,'tidy_tree_layout',{'board_id':tidyboard['id'],'expected_revision':1});assert r['isError'] and 'conflict' in e.lower(),e
 r,e=call(245,'tidy_tree_layout',{'board_id':tidyboard['id'],'root_id':'zzz','expected_revision':3});assert r['isError'] and 'not found' in e.lower(),e
 capture,meta=call(246,'capture_board',{'board_id':tidyboard['id']});assert not capture.get('isError') and meta['revision']==3 and capture['content'][1]['type']=='image'
+_,fb=call(247,'edit_board',{'board_id':tidyboard['id'],'expected_revision':3,'operations':[{'action':'update','collection':'notes','id':'r','fields':{'collapsed':True}}]})
+assert fb['revision']==4
+_,fc=call(248,'get_board_context',{'board_id':tidyboard['id']})
+rn=[n for n in fc['notes'] if n['id']=='r'][0]
+assert rn['collapsed'] is True and rn['child_note_ids'],rn
+_,fb=call(249,'edit_board',{'board_id':tidyboard['id'],'expected_revision':4,'operations':[{'action':'update','collection':'notes','id':'r','fields':{'collapsed':None}}]})
+assert fb['revision']==5
+_,fd=call(250,'get_board_context',{'board_id':tidyboard['id']})
+rn=[n for n in fd['notes'] if n['id']=='r'][0]
+assert rn['collapsed'] is False,rn
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)

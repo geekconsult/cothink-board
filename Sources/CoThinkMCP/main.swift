@@ -258,6 +258,7 @@ func boardContext(_ board: Board) -> [String: Any] {
             "group_titles": groups.map(\.title),
             "parent_note_id": note.parentID as Any? ?? NSNull(),
             "child_note_ids": board.children(of: note.id).map(\.id),
+            "collapsed": note.collapsed ?? false,
             "connection_ids": connected,
             "attachments": attachments,
             "has_legacy_image": note.imagePath != nil
