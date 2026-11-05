@@ -130,6 +130,21 @@ public enum BoardPDFHTML {
         let groups = board.groups.map { g in
             "<rect x=\"\(number(g.x))\" y=\"\(number(g.y))\" width=\"\(number(g.width))\" height=\"\(number(g.height))\" rx=\"15\" fill=\"\(color(g.color, fallback: "#E6E9F5"))\" fill-opacity=\".38\" stroke=\"#a8acb5\" stroke-dasharray=\"7 5\"/><text x=\"\(number(g.x+13))\" y=\"\(number(g.y+22))\" fill=\"#59616c\" font-size=\"\(number(g.fontSize ?? 11))\" font-weight=\"700\">\(escape(short(g.title)))</text>"
         }.joined()
+        // Mindmap tree edges: parentID links drawn as accent elbows with an arrowhead
+        // at the child end, under the connection layer, matching the canvas z-order.
+        let treeEdges = board.notes.compactMap { child -> String? in
+            guard let parentID = child.parentID, let parent = notes[parentID] else { return nil }
+            let s = ConnectionPoint(x: parent.x + parent.width, y: parent.y + parent.height / 2)
+            let e = ConnectionPoint(x: child.x, y: child.y + child.height / 2)
+            let midX = (s.x + e.x) / 2
+            let d = "M \(number(s.x)) \(number(s.y)) L \(number(midX)) \(number(s.y)) L \(number(midX)) \(number(e.y)) L \(number(e.x)) \(number(e.y))"
+            let angle = atan2(e.y - e.y, e.x - midX), length = 10.0, wing = 5.0
+            let bx = e.x - cos(angle) * length, by = e.y - sin(angle) * length
+            let x1 = bx - sin(angle) * wing, y1 = by + cos(angle) * wing
+            let x2 = bx + sin(angle) * wing, y2 = by - cos(angle) * wing
+            let arrow = "<path d=\"M \(number(x1)) \(number(y1)) L \(number(e.x)) \(number(e.y)) L \(number(x2)) \(number(y2))\" fill=\"none\" stroke=\"#7A8BA8\" stroke-width=\"1.5\"/>"
+            return "<path d=\"\(d)\" fill=\"none\" stroke=\"#7A8BA8\" stroke-width=\"1.5\"/>\(arrow)"
+        }.joined()
         let edges = board.connections.compactMap { edge -> String? in
             guard let a = notes[edge.from], let b = notes[edge.to] else { return nil }
             let start = ConnectionPoint(x: a.x+a.width/2, y: a.y+a.height/2), end = ConnectionPoint(x: b.x+b.width/2, y: b.y+b.height/2)
@@ -165,6 +180,6 @@ public enum BoardPDFHTML {
             let image = imageSource.map { "<image href=\"\(escape($0))\" x=\"\(number(n.x+10))\" y=\"\(number(n.y+n.height*0.45))\" width=\"\(number(max(0,n.width-20)))\" height=\"\(number(max(0,n.height*0.45)))\" preserveAspectRatio=\"xMidYMid meet\"/>" } ?? ""
             return "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath><rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"9\" fill=\"\(fill)\" stroke=\"\(color(n.strokeColor, fallback: "#939aa4"))\"/><text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(min(n.fontSize ?? 15, 22)))\" font-weight=\"600\">\(text)</text>\(image)"
         }.joined()
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(edges)\(cards)</g></svg>"
+        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(treeEdges)\(edges)\(cards)</g></svg>"
     }
 }

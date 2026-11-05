@@ -135,6 +135,7 @@ _,tidied2=call(243,'tidy_tree_layout',{'board_id':tidyboard['id'],'root_id':'r',
 assert {n['id']:(n['x'],n['y']) for n in tidied2['notes']}==pos
 r,e=call(244,'tidy_tree_layout',{'board_id':tidyboard['id'],'expected_revision':1});assert r['isError'] and 'conflict' in e.lower(),e
 r,e=call(245,'tidy_tree_layout',{'board_id':tidyboard['id'],'root_id':'zzz','expected_revision':3});assert r['isError'] and 'not found' in e.lower(),e
+capture,meta=call(246,'capture_board',{'board_id':tidyboard['id']});assert not capture.get('isError') and meta['revision']==3 and capture['content'][1]['type']=='image'
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
