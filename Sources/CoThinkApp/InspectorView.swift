@@ -159,6 +159,7 @@ struct InspectorView: View {
                 .scrollContentBackground(.hidden).padding(6)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.1)))
+            parentControls(note)
             imageAttachmentControls
             projectAttachmentControls
             if let group = board.groupContaining(noteID: note.id) {
@@ -182,6 +183,23 @@ struct InspectorView: View {
             colors
             strokeControls
         }
+    }
+
+    @ViewBuilder
+    private func parentControls(_ note: Note) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("PARENT").font(.caption.bold()).foregroundStyle(.secondary)
+            Text(parentTitle(of: note)).lineLimit(2).foregroundStyle(.secondary)
+            if note.parentID != nil {
+                Button("Detach from parent", systemImage: "scissors") { model.detachNote(note.id) }
+                    .help("Remove this note from its mindmap tree so it can move independently")
+            }
+        }
+    }
+
+    private func parentTitle(of note: Note) -> String {
+        guard let parent = board.notes.first(where: { $0.id == note.parentID }) else { return "None" }
+        return parent.text.isEmpty ? "Empty note" : parent.text
     }
 
     private func groupProperties(_ group: BoardGroup) -> some View {

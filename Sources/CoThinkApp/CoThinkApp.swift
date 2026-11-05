@@ -56,6 +56,7 @@ struct CoThinkApp: App {
                 Button("Connect Selected Note") { model.beginConnection() }.keyboardShortcut("l", modifiers: .command).disabled(model.selectedNoteID == nil || model.homeVisible)
                 Button("Delete Selection") { NotificationCenter.default.post(name: .requestDeleteSelectionCommand, object: nil) }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection || model.homeVisible)
                 Button("Change Wallpaper…") { NotificationCenter.default.post(name: .wallpaperCommand, object: nil) }.disabled(model.board == nil || model.homeVisible)
+                Button("Tidy Mindmap Tree") { model.tidyTree(rootID: nil) }.keyboardShortcut("t", modifiers: [.command, .shift]).disabled(model.board == nil || model.homeVisible)
                 Divider()
                 Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil || model.homeVisible)
                 Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil || model.homeVisible)
@@ -272,6 +273,55 @@ final class BoardViewModel: ObservableObject {
         }
     }
 
+    func addChild(of sourceID: String) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let current = board,
+              let parent = current.notes.first(where: { $0.id == sourceID }) else { return }
+        let lastChild = current.children(of: sourceID).last
+        let note = Note(text: "New idea",
+                        x: parent.x + parent.width + 60,
+                        y: lastChild.map { $0.y + $0.height + 24 } ?? parent.y,
+                        width: 200, height: 100, color: "#FFF1AF", parentID: sourceID)
+        if mutate({ $0.notes.append(note) }) {
+            selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+        }
+    }
+
+    func addSiblingNote(to noteID: String) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let current = board,
+              let index = current.notes.firstIndex(where: { $0.id == noteID }) else { return }
+        let sibling = current.notes[index]
+        let note = Note(text: "New idea",
+                        x: sibling.x, y: sibling.y + sibling.height + 24,
+                        width: 200, height: 100, color: "#FFF1AF", parentID: sibling.parentID)
+        if mutate({ $0.notes.insert(note, at: index + 1) }) {
+            selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+        }
+    }
+
+    func detachNote(_ noteID: String) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, board?.notes.first(where: { $0.id == noteID })?.parentID != nil else { return }
+        mutate { try? $0.setNoteParent(noteID, to: nil) }
+    }
+
+    func selectSubtree(of noteID: String) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let current = board, current.notes.contains(where: { $0.id == noteID }) else { return }
+        selectedNoteIDs = current.descendantIDs(of: noteID).union([noteID])
+        selectedNoteID = noteID
+        selectedGroupID = nil
+        selectedConnectionID = nil
+        connectingFrom = nil
+    }
+
+    func tidyTree(rootID: String?) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked else { return }
+        mutate { $0.tidySubtree(rootID: rootID) }
+    }
+
     func copySelection() {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, let board else { return }
@@ -485,9 +535,7 @@ final class BoardViewModel: ObservableObject {
         guard !notes.isEmpty || group != nil || connection != nil else { return }
         mutate { board in
             if !notes.isEmpty {
-                board.notes.removeAll { notes.contains($0.id) }
-                board.connections.removeAll { notes.contains($0.from) || notes.contains($0.to) }
-                for i in board.groups.indices { board.groups[i].memberIDs?.removeAll { notes.contains($0) } }
+                board.deleteNotes(notes)
             }
             if let group { board.groups.removeAll { $0.id == group } }
             if let connection { board.connections.removeAll { $0.id == connection } }
@@ -1080,6 +1128,11 @@ struct WorkspaceView: View {
                         Button("New Note") { model.addNote() }
                     }
                 ForEach(board.groups) { group in groupView(group) }
+                ForEach(board.notes.filter { $0.parentID != nil }) { note in
+                    if let parent = board.notes.first(where: { $0.id == note.parentID }) {
+                        TreeEdgeView(from: displayed(parent), to: displayed(note), canvasWidth: extent.width, canvasHeight: extent.height)
+                    }
+                }
                 ForEach(board.connections) { edge in
                     if let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
                         ConnectionView(from: displayed(from), to: displayed(to), edge: displayedConnection(edge), selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
@@ -1134,11 +1187,17 @@ struct WorkspaceView: View {
         .background(CanvasShortcutMonitor { event in
             guard canvasAcceptsShortcuts else { return false }
             let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-            if modifiers.isEmpty, model.selectedNoteID != nil, event.keyCode == 48 {
-                model.addAdjacentNote(toRight: true); return true
-            }
-            if modifiers.isEmpty, model.selectedNoteID != nil, event.keyCode == 36 || event.keyCode == 76 {
-                model.addAdjacentNote(toRight: false); return true
+            if modifiers.isEmpty, let selected = model.selectedNoteID {
+                if event.keyCode == 48 {
+                    if model.board?.isTreeLinked(noteID: selected) == true { model.addChild(of: selected) }
+                    else { model.addAdjacentNote(toRight: true) }
+                    return true
+                }
+                if event.keyCode == 36 || event.keyCode == 76 {
+                    if model.board?.isTreeLinked(noteID: selected) == true { model.addSiblingNote(to: selected) }
+                    else { model.addAdjacentNote(toRight: false) }
+                    return true
+                }
             }
             if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "c", model.hasSelection { model.copySelection(); return true }
             if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v", model.canPaste { model.pasteSelection(); return true }
@@ -1368,6 +1427,12 @@ struct WorkspaceView: View {
                 }
             })
             .contextMenu {
+                Button("Add Child Note") { focusNoteForContextMenu(note); model.addChild(of: note.id) }
+                Button("Add Sibling Note") { focusNoteForContextMenu(note); model.addSiblingNote(to: note.id) }
+                Button("Select Subtree") { focusNoteForContextMenu(note); model.selectSubtree(of: note.id) }
+                if note.parentID != nil {
+                    Button("Remove from Tree") { focusNoteForContextMenu(note); model.detachNote(note.id) }
+                }
                 Button("Copy") { focusNoteForContextMenu(note); model.copySelection() }
                 Button("Duplicate") { focusNoteForContextMenu(note); model.copySelection(); model.pasteSelection() }
                 Button("Paste as New Note") { model.pasteSelection() }.disabled(!model.canPaste)
@@ -1702,6 +1767,38 @@ struct ConnectionGeometry {
         }
         self.path = path; self.start = start; self.end = end
         self.startDirection = sourceDir; self.endDirection = targetDir
+    }
+}
+
+/// Draws the mindmap elbow between a note and its parent. Purely derived from the
+/// two notes' positions; never hittable or selectable.
+struct TreeEdgeView: View {
+    let from: Note
+    let to: Note
+    let canvasWidth: Double
+    let canvasHeight: Double
+
+    var body: some View {
+        let start = CGPoint(x: from.x + from.width, y: from.y + from.height / 2)
+        let end = CGPoint(x: to.x, y: to.y + to.height / 2)
+        let midX = (start.x + end.x) / 2
+        let direction = CGPoint(x: end.x - midX >= 0 ? 1 : -1, y: 0)
+        return Canvas { context, _ in
+            var path = Path()
+            path.move(to: start)
+            path.addLine(to: CGPoint(x: midX, y: start.y))
+            path.addLine(to: CGPoint(x: midX, y: end.y))
+            path.addLine(to: end)
+            context.stroke(path, with: .color(Color(hex: "#7A8BA8")), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            var arrow = Path()
+            arrow.move(to: end)
+            arrow.addLine(to: CGPoint(x: end.x - direction.x * 12 - direction.y * 6, y: end.y - direction.y * 12 + direction.x * 6))
+            arrow.move(to: end)
+            arrow.addLine(to: CGPoint(x: end.x - direction.x * 12 + direction.y * 6, y: end.y - direction.y * 12 - direction.x * 6))
+            context.stroke(arrow, with: .color(Color(hex: "#7A8BA8")), lineWidth: 1.5)
+        }
+        .frame(width: canvasWidth, height: canvasHeight)
+        .allowsHitTesting(false)
     }
 }
 
