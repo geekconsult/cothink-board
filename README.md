@@ -236,6 +236,7 @@ By default, the app stores its database and history in `~/Library/Application Su
 | New note | ⌘N |
 | New connected note to the right of the selected note | Tab |
 | New note below the selected note | Return |
+| New child note (mindmap) from any selected note | ⇧Tab |
 | New child note (mindmap) from a tree-linked selected note | Tab |
 | New sibling note (mindmap) from a tree-linked selected note | Return |
 | Tidy mindmap tree layout | ⇧⌘T |
@@ -269,7 +270,7 @@ The canvas grows right and down from its top-left origin. Sidebar search matches
 
 ### Navigating and selecting
 
-- Shift-click notes to add or remove them from a selection; drag the selection to move it together. Dragging a locked note also moves its group and other locked members, and dragging a note also moves its mindmap subtree; group and subtree moves compose. Drag on empty canvas to select notes within a rectangle. Delete removes the selected notes, and deleting a note promotes its tree children to the nearest surviving ancestor.
+- Shift-click notes to add or remove them from a selection; shift-clicking a note with children toggles its whole mindmap subtree in or out of the selection. Drag the selection to move it together. Dragging a locked note also moves its group and other locked members, and dragging a note also moves its mindmap subtree; group and subtree moves compose. Drag on empty canvas to select notes within a rectangle. Delete removes the selected notes, and deleting a note promotes its tree children to the nearest surviving ancestor.
 - Any note can parent child notes (a mindmap tree). Tab grows a child from a tree-linked note (a plain note keeps the connected-note-to-the-right behavior), Return adds a sibling from a tree-linked note, and the note's context menu offers Add Child Note, Add Sibling Note, Select Subtree, and Remove from Tree. Tree edges draw as accent arrows between parent and child and track drags. ⇧⌘T tidies every mindmap tree into a right-growing layout without moving the roots. The inspector shows a note's parent with a Detach button.
 - Notes inside a group show a lock control. Unlock a note to move it independently; to lock it again, place its center inside a group and click the open lock. In overlapping groups the topmost group is used.
 - Use the overview in the lower-right corner to see the board and click or drag to pan.

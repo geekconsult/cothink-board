@@ -1187,6 +1187,10 @@ struct WorkspaceView: View {
         .background(CanvasShortcutMonitor { event in
             guard canvasAcceptsShortcuts else { return false }
             let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            if modifiers == .shift, event.keyCode == 48, let selected = model.selectedNoteID {
+                model.addChild(of: selected)
+                return true
+            }
             if modifiers.isEmpty, let selected = model.selectedNoteID {
                 if event.keyCode == 48 {
                     if model.board?.isTreeLinked(noteID: selected) == true { model.addChild(of: selected) }
@@ -1391,7 +1395,10 @@ struct WorkspaceView: View {
                     guard !model.draftBlocked else { return }
                     var ids = model.selectedNoteIDs
                     if let selected = model.selectedNoteID { ids.insert(selected) }
-                    if ids.contains(note.id) { ids.remove(note.id) } else { ids.insert(note.id) }
+                    // Shift-click toggles the note together with its mindmap subtree;
+                    // a childless note toggles exactly itself, so plain notes are unchanged.
+                    let branch = (model.board?.descendantIDs(of: note.id) ?? []).union([note.id])
+                    if branch.isSubset(of: ids) { ids.subtract(branch) } else { ids.formUnion(branch) }
                     model.selectedNoteID = nil; model.selectedNoteIDs = ids
                     model.selectedGroupID = nil; model.selectedConnectionID = nil
                 } else if !inSelection {
