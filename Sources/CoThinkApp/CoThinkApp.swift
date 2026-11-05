@@ -48,27 +48,54 @@ struct CoThinkApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Note") { model.addNote() }.keyboardShortcut("n", modifiers: .command).disabled(model.board == nil)
+                Button("New Note") { model.addNote() }.keyboardShortcut("n", modifiers: .command).disabled(model.board == nil || model.homeVisible)
                 Button("New Board") { model.createBoard() }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandMenu("Board") {
-                Button("Group Selection or Draw Group") { NotificationCenter.default.post(name: .createGroupCommand, object: nil) }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(model.board == nil)
-                Button("Connect Selected Note") { model.beginConnection() }.keyboardShortcut("l", modifiers: .command).disabled(model.selectedNoteID == nil)
-                Button("Delete Selection") { NotificationCenter.default.post(name: .requestDeleteSelectionCommand, object: nil) }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection)
-                Button("Change Wallpaper…") { NotificationCenter.default.post(name: .wallpaperCommand, object: nil) }.disabled(model.board == nil)
+                Button("Group Selection or Draw Group") { NotificationCenter.default.post(name: .createGroupCommand, object: nil) }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(model.board == nil || model.homeVisible)
+                Button("Connect Selected Note") { model.beginConnection() }.keyboardShortcut("l", modifiers: .command).disabled(model.selectedNoteID == nil || model.homeVisible)
+                Button("Delete Selection") { NotificationCenter.default.post(name: .requestDeleteSelectionCommand, object: nil) }.keyboardShortcut(.delete, modifiers: [.command, .shift]).disabled(!model.hasSelection || model.homeVisible)
+                Button("Change Wallpaper…") { NotificationCenter.default.post(name: .wallpaperCommand, object: nil) }.disabled(model.board == nil || model.homeVisible)
                 Divider()
-                Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil)
-                Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil)
+                Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil || model.homeVisible)
+                Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil || model.homeVisible)
             }
             CommandGroup(after: .undoRedo) {
-                Button("Undo Board Change") { model.undo() }.keyboardShortcut("z", modifiers: .command)
-                Button("Redo Board Change") { model.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
+                Button("Undo Board Change") { model.undo() }.keyboardShortcut("z", modifiers: .command).disabled(model.homeVisible)
+                Button("Redo Board Change") { model.redo() }.keyboardShortcut("z", modifiers: [.command, .shift]).disabled(model.homeVisible)
+            }
+            CommandGroup(replacing: .pasteboard) {
+                let editingText = NSApp.keyWindow?.firstResponder is NSTextView
+                Button("Cut") {
+                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { textView.cut(nil) }
+                    else { model.copySelection(); model.deleteSelection() }
+                }
+                .keyboardShortcut("x", modifiers: .command)
+                .disabled(!editingText && (!model.hasSelection || model.homeVisible))
+                Button("Copy") {
+                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { textView.copy(nil) }
+                    else { model.copySelection() }
+                }
+                .keyboardShortcut("c", modifiers: .command)
+                .disabled(!editingText && (!model.hasSelection || model.homeVisible))
+                Button("Paste") {
+                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { textView.paste(nil) }
+                    else { model.pasteSelection() }
+                }
+                .keyboardShortcut("v", modifiers: .command)
+                .disabled(!editingText && (!model.canPaste || model.homeVisible))
+                Button("Select All") {
+                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { textView.selectAll(nil) }
+                    else { model.selectAllNotes() }
+                }
+                .keyboardShortcut("a", modifiers: .command)
+                .disabled(!editingText && ((model.board?.notes.isEmpty ?? true) || model.homeVisible))
             }
             CommandMenu("View") {
-                Button("Zoom In") { NotificationCenter.default.post(name: .zoomInCommand, object: nil) }.keyboardShortcut("+", modifiers: .command).disabled(model.board == nil)
-                Button("Zoom Out") { NotificationCenter.default.post(name: .zoomOutCommand, object: nil) }.keyboardShortcut("-", modifiers: .command).disabled(model.board == nil)
+                Button("Zoom In") { NotificationCenter.default.post(name: .zoomInCommand, object: nil) }.keyboardShortcut("+", modifiers: .command).disabled(model.board == nil || model.homeVisible)
+                Button("Zoom Out") { NotificationCenter.default.post(name: .zoomOutCommand, object: nil) }.keyboardShortcut("-", modifiers: .command).disabled(model.board == nil || model.homeVisible)
                 Divider()
-                Button("Actual Size") { NotificationCenter.default.post(name: .zoomResetCommand, object: nil) }.keyboardShortcut("0", modifiers: .command).disabled(model.board == nil)
+                Button("Actual Size") { NotificationCenter.default.post(name: .zoomResetCommand, object: nil) }.keyboardShortcut("0", modifiers: .command).disabled(model.board == nil || model.homeVisible)
             }
         }
     }
@@ -86,11 +113,25 @@ final class BoardViewModel: ObservableObject {
     @Published var selectedNoteID: String?
     @Published var selectedNoteIDs: Set<String> = []
     var hasSelection: Bool { selectedNoteID != nil || !selectedNoteIDs.isEmpty || selectedGroupID != nil || selectedConnectionID != nil }
+
+    var canPaste: Bool {
+        let pasteboard = NSPasteboard.general
+        if pasteboard.data(forType: canvasClipboardType) != nil { return true }
+        return pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    func selectAllNotes() {
+        guard let board, !board.notes.isEmpty else { return }
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        selectedNoteIDs = Set(board.notes.map(\.id)); selectedNoteID = nil; selectedGroupID = nil; selectedConnectionID = nil
+    }
     var selectionCount: Int { (selectedNoteID != nil ? 1 : 0) + selectedNoteIDs.count + (selectedGroupID != nil ? 1 : 0) + (selectedConnectionID != nil ? 1 : 0) }
     @Published var selectedGroupID: String?
     @Published var selectedConnectionID: String?
     @Published var connectingFrom: String?
     @Published var error: String?
+    /// True while the Home page is showing; board-canvas menu commands disable themselves.
+    @Published var homeVisible = true
     private var store: BoardStore?
 
     init(storeDirectory: URL? = nil) {
@@ -150,15 +191,19 @@ final class BoardViewModel: ObservableObject {
     }
 
     func deleteBoard() {
+        guard let current = board else { return }
+        deleteBoard(id: current.id)
+    }
+
+    func deleteBoard(id: String) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked else { return }
-        guard let current = board else { return }
+        guard let target = boards.first(where: { $0.id == id }) else { return }
         do {
-            try store?.delete(current.id, expectedRevision: current.revision)
-            board = nil
-            clearSelection()
+            try store?.delete(target.id, expectedRevision: target.revision)
+            if board?.id == target.id { board = nil; clearSelection() }
             try refresh()
-            if let first = boards.first { selectBoard(first.id) }
+            if board == nil, let first = boards.first { selectBoard(first.id) }
         } catch { self.error = error.localizedDescription }
     }
 
@@ -232,21 +277,29 @@ final class BoardViewModel: ObservableObject {
         guard !draftBlocked, let board else { return }
         var ids = selectedNoteIDs
         if let selectedNoteID { ids.insert(selectedNoteID) }
-        let fragment = BoardFragment.capture(from: board, noteIDs: ids, groupID: selectedGroupID, connectionID: selectedConnectionID)
+        // Groups whose every member is selected travel with the copy, so enclosing
+        // a cluster and copying reproduces its group boxes too.
+        let enclosedGroups = Set(board.groups
+            .filter { group in (group.memberIDs ?? []).allSatisfy { ids.contains($0) } }
+            .filter { !($0.memberIDs ?? []).isEmpty }
+            .map(\.id))
+        let fragment = BoardFragment.capture(from: board, noteIDs: ids, groupID: selectedGroupID, connectionID: selectedConnectionID, extraGroupIDs: enclosedGroups)
         guard !fragment.notes.isEmpty || !fragment.groups.isEmpty else { return }
         let folder = board.projectFilesPath ?? defaultProjectFilesDirectory(for: board.id).path
         guard let data = try? JSONEncoder().encode(CanvasClipboard(fragment: fragment, sourceFolder: folder)) else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents(); pasteboard.setData(data, forType: canvasClipboardType)
+        let plainText = fragment.notes.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        if !plainText.isEmpty { pasteboard.setString(plainText, forType: .string) }
         clipboardChangeCount = pasteboard.changeCount; pasteCount = 0
     }
 
     func pasteSelection() {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
-        guard !draftBlocked, let current = board,
-              let data = NSPasteboard.general.data(forType: canvasClipboardType),
+        guard !draftBlocked, let current = board else { return }
+        guard let data = NSPasteboard.general.data(forType: canvasClipboardType),
               let copied = try? JSONDecoder().decode(CanvasClipboard.self, from: data),
-              !copied.fragment.notes.isEmpty || !copied.fragment.groups.isEmpty else { return }
+              !copied.fragment.notes.isEmpty || !copied.fragment.groups.isEmpty else { pasteTextSelection(); return }
         let fragment = copied.fragment
         guard Set(fragment.notes.map(\.id)).count == fragment.notes.count,
               Set(fragment.groups.map(\.id)).count == fragment.groups.count,
@@ -297,6 +350,23 @@ final class BoardViewModel: ObservableObject {
         }
     }
 
+    func pasteTextSelection() {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked else { return }
+        let pasteboard = NSPasteboard.general
+        guard let text = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
+        if clipboardChangeCount != pasteboard.changeCount { clipboardChangeCount = pasteboard.changeCount; pasteCount = 0 }
+        let offset = Double(pasteCount + 1) * 36
+        let lineCount = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(0.0) { $0 + max(1, (Double($1.count) / 24).rounded(.up)) }
+        let height = min(480, max(100, lineCount * 19 + 48))
+        let id = UUID().uuidString
+        if mutate({ $0.notes.append(Note(id: id, text: text, x: 500 + offset, y: 300 + offset, width: 220, height: height, color: "#FFF1AF")) }) {
+            pasteCount += 1
+            selectedNoteID = id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+        }
+    }
+
     func addGroup() {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked else { return }
@@ -322,10 +392,17 @@ final class BoardViewModel: ObservableObject {
         }
     }
 
-    func selectNotes(in rect: BoardRect) {
+    func selectNotes(in rect: BoardRect, additive: Bool = false) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, let current = board else { return }
-        selectedNoteIDs = Set(current.notes.filter { rect.containsCenter(of: $0) }.map(\.id))
+        let hits = Set(current.notes.filter { rect.containsCenter(of: $0) }.map(\.id))
+        if additive {
+            var ids = selectedNoteIDs.union(hits)
+            if let single = selectedNoteID { ids.insert(single) }
+            selectedNoteIDs = ids
+        } else {
+            selectedNoteIDs = hits
+        }
         selectedNoteID = nil; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
     }
 
@@ -505,6 +582,7 @@ struct WorkspaceView: View {
     @State private var connectionDrag: ConnectionDrag?
     @State private var routePointDrag: RoutePointDrag?
     @State private var drawingGroup = false
+    @State private var showingHome = true
     @FocusState private var canvasFocused: Bool
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -536,16 +614,38 @@ struct WorkspaceView: View {
                 }
             }
         }
+    }
+
+    /// Switches between the board workspace and the Home page; shared chrome
+    /// (background, tint, dialogs, commands) wraps whichever is showing.
+    @ViewBuilder
+    private var rootContent: some View {
+        if showingHome {
+            homeLayer
+        } else {
+            canvasRoot
+        }
+    }
+
+    private var homeLayer: some View {
+        HomeView(model: model,
+                 search: $search,
+                 onOpenBoard: { id in showingHome = false; model.selectBoard(id) },
+                 onNewBoard: {
+                     model.createBoard()
+                     if model.board != nil { showingHome = false }
+                 })
+    }
+
+    private var dialogAndCommandLayer: some View {
+        rootContent
         .background(workspaceBackground)
         .preferredColorScheme(appearanceMode == "light" ? .light : appearanceMode == "dark" ? .dark : nil)
         .tint(colorScheme == .dark
               ? Color(red: 1.0, green: 0.71, blue: 0.54)
               : Color(red: 0.58, green: 0.25, blue: 0.13))
-    }
-
-    private var dialogAndCommandLayer: some View {
-        canvasRoot
-        .onAppear { registerAuxiliaryWindows() }
+        .onAppear { model.homeVisible = showingHome; registerAuxiliaryWindows() }
+        .onChange(of: showingHome) { _, visible in model.homeVisible = visible }
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
         .onReceive(NotificationCenter.default.publisher(for: .requestDeleteSelectionCommand)) { _ in requestDeleteSelection() }
@@ -555,7 +655,10 @@ struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .zoomInCommand)) { _ in zoomStep(1) }
         .onReceive(NotificationCenter.default.publisher(for: .zoomOutCommand)) { _ in zoomStep(-1) }
         .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in zoom = 1.0 }
-        .onExitCommand { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false }
+        .onExitCommand {
+            if showingHome { showingHome = false }
+            else { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false }
+        }
         .alert("Unable to complete action", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -798,6 +901,12 @@ struct WorkspaceView: View {
         guard model.hasSelection else { return }
         if model.selectionCount > 1 { showingDeleteSelection = true } else { model.deleteSelection() }
     }
+
+    func focusNoteForContextMenu(_ note: Note) {
+        if !(model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id)) {
+            model.chooseNote(note.id)
+        }
+    }
     func requestGroup() {
         guard model.board != nil else { return }
         if !model.selectedNoteIDs.isEmpty {
@@ -826,14 +935,22 @@ struct WorkspaceView: View {
             .accessibilityValue(showBoardSidebar ? "Visible" : "Hidden")
             .keyboardShortcut("1", modifiers: [.command, .option])
 
+            Button { showingHome = true } label: { Image(systemName: "house").frame(width: 22, height: 24) }
+                .help("Home — all boards (⌘⇧H)")
+                .accessibilityLabel("Home")
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+
             VStack(alignment: .leading, spacing: 3) {
                 Text(board?.title ?? "CoThink Board").font(.headline).lineLimit(1)
                 if model.connectingFrom != nil {
                     Text("Select another note to connect").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if drawingGroup {
                     Text("Drag on the canvas to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else if let start = selectionStart, let end = selectionEnd, let board {
+                    let marqueeCount = board.notes.filter { BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
+                    Text("Selecting \(marqueeCount) note\(marqueeCount == 1 ? "" : "s")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if !model.selectedNoteIDs.isEmpty {
-                    Text("\(model.selectedNoteIDs.count) notes selected · Choose Group to lock them together").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text("\(model.selectedNoteIDs.count) notes selected · Drag to move together · ⌘C to copy").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
@@ -954,9 +1071,14 @@ struct WorkspaceView: View {
                             if drawingGroup {
                                 model.createGroup(in: rect)
                                 drawingGroup = false
-                            } else { model.selectNotes(in: rect) }
+                            } else { model.selectNotes(in: rect, additive: NSEvent.modifierFlags.contains(.shift)) }
                             canvasFocused = true
                         })
+                    .contextMenu {
+                        Button("Paste as New Note") { model.pasteSelection() }.disabled(!model.canPaste)
+                        Divider()
+                        Button("New Note") { model.addNote() }
+                    }
                 ForEach(board.groups) { group in groupView(group) }
                 ForEach(board.connections) { edge in
                     if let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
@@ -1019,7 +1141,7 @@ struct WorkspaceView: View {
                 model.addAdjacentNote(toRight: false); return true
             }
             if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "c", model.hasSelection { model.copySelection(); return true }
-            if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v", NSPasteboard.general.data(forType: canvasClipboardType) != nil { model.pasteSelection(); return true }
+            if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v", model.canPaste { model.pasteSelection(); return true }
             return false
         })
         .onKeyPress(.delete) {
@@ -1168,10 +1290,17 @@ struct WorkspaceView: View {
         }
     }
 
+    /// True while the rubber-band selection is being dragged and the note's center
+    /// is inside the current rect — previews which notes the marquee will select.
+    func marqueeHighlight(_ note: Note) -> Bool {
+        guard let start = selectionStart, let end = selectionEnd else { return false }
+        return BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: note)
+    }
+
     func noteView(_ note: Note, board: Board) -> some View {
         NoteTile(
             note: displayed(note),
-            selected: model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id),
+            selected: model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id) || marqueeHighlight(note),
             isEditing: editingObjectID == note.id && !editingGroupTitle,
             imagePath: note.imagePath,
             assets: board.projectAssets,
@@ -1195,7 +1324,8 @@ struct WorkspaceView: View {
             .frame(width: displayed(note).width, height: displayed(note).height)
             .position(x: displayed(note).x + displayed(note).width / 2, y: displayed(note).y + displayed(note).height / 2)
             .onTapGesture {
-                let clickedAnotherObject = model.selectedNoteID != note.id || model.selectedGroupID != nil
+                let inSelection = model.selectedNoteIDs.contains(note.id) || model.selectedNoteID == note.id
+                let clickedAnotherObject = !inSelection || model.selectedGroupID != nil
                 if editingObjectID != note.id { finishInlineEditing() }
                 if NSEvent.modifierFlags.contains(.shift), model.connectingFrom == nil {
                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -1205,7 +1335,11 @@ struct WorkspaceView: View {
                     if ids.contains(note.id) { ids.remove(note.id) } else { ids.insert(note.id) }
                     model.selectedNoteID = nil; model.selectedNoteIDs = ids
                     model.selectedGroupID = nil; model.selectedConnectionID = nil
-                } else { model.chooseNote(note.id) }
+                } else if !inSelection {
+                    model.chooseNote(note.id)
+                }
+                // Clicking a member of the current selection keeps the selection,
+                // so pressing on any member and dragging moves the whole selection.
                 canvasFocused = true
                 if clickedAnotherObject { showInspector = false }
             }
@@ -1233,6 +1367,13 @@ struct WorkspaceView: View {
                     board.notes[index].y = max(0, note.y + dy)
                 }
             })
+            .contextMenu {
+                Button("Copy") { focusNoteForContextMenu(note); model.copySelection() }
+                Button("Duplicate") { focusNoteForContextMenu(note); model.copySelection(); model.pasteSelection() }
+                Button("Paste as New Note") { model.pasteSelection() }.disabled(!model.canPaste)
+                Divider()
+                Button("Delete", role: .destructive) { focusNoteForContextMenu(note); requestDeleteSelection() }
+            }
     }
 
     func displayedGroupRect(_ group: BoardGroup) -> BoardRect {
@@ -1427,7 +1568,7 @@ struct GroupTile: View {
         .frame(width: group.width, height: group.height, alignment: .topLeading)
         .background(Color(hex: group.color).opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(hex: group.strokeColor ?? "#6F7785"), style: StrokeStyle(lineWidth: group.strokeWidth ?? 1, lineCap: .round, dash: (group.strokeStyle ?? .dashed).dashPattern)))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(selected ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2))
     }
 }
 
@@ -1501,8 +1642,20 @@ struct NoteTile: View {
             .padding(isEditing ? 8 : 16)
             .background(Color(hex: note.color), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: StrokeStyle(lineWidth: note.strokeWidth ?? 1, lineCap: .round, dash: (note.strokeStyle ?? .solid).dashPattern)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 1))
-            .shadow(color: .black.opacity(0.07), radius: 5, y: 2)
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2))
+            .overlay(alignment: .topLeading) {
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white, Color.accentColor)
+                        .padding(3)
+                        .background(Circle().fill(.regularMaterial))
+                        .offset(x: -10, y: -10)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .shadow(color: selected ? Color.accentColor.opacity(0.55) : .black.opacity(0.07), radius: selected ? 7 : 5, y: selected ? 0 : 2)
     }
 
     private func assetSymbol(_ name: String) -> String {

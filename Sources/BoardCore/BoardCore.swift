@@ -140,8 +140,8 @@ public struct BoardFragment: Codable {
     public var connections: [Connection]
     public var assets: [ProjectAsset]
 
-    public static func capture(from board: Board, noteIDs: Set<String>, groupID: String?, connectionID: String?) -> BoardFragment {
-        let groups = board.groups.filter { $0.id == groupID }
+    public static func capture(from board: Board, noteIDs: Set<String>, groupID: String?, connectionID: String?, extraGroupIDs: Set<String> = []) -> BoardFragment {
+        let groups = board.groups.filter { $0.id == groupID || extraGroupIDs.contains($0.id) }
         var ids = noteIDs.union(groups.flatMap { $0.memberIDs ?? [] })
         if let edge = board.connections.first(where: { $0.id == connectionID }) { ids.formUnion([edge.from, edge.to]) }
         let notes = board.notes.filter { ids.contains($0.id) }

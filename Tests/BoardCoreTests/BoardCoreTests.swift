@@ -26,6 +26,51 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertEqual(board.notes[3].assetIDs, ["new-asset"])
         XCTAssertEqual(board.notes[3].x, 56)
     }
+    func testMultiSelectionMoveDragsNotesAndLockedGroupsTogether() {
+        var board = Board(notes: [Note(id: "a", text: "A", x: 100, y: 100), Note(id: "b", text: "B", x: 500, y: 100), Note(id: "c", text: "C", x: 900, y: 100)])
+        var group = BoardGroup(id: "g", x: 80, y: 80)
+        group.memberIDs = ["a"]
+        board.groups = [group]
+        // Dragging the {a, b} selection moves both notes and a's locked group as one
+        // unit, clamped so no object moves above the canvas edge.
+        board.moveSelection(noteIDs: ["a", "b"], dx: 50, dy: -200)
+        XCTAssertEqual(board.notes.first { $0.id == "a" }?.x, 150)
+        XCTAssertEqual(board.notes.first { $0.id == "a" }?.y, 20)
+        XCTAssertEqual(board.notes.first { $0.id == "b" }?.x, 550)
+        XCTAssertEqual(board.notes.first { $0.id == "b" }?.y, 20)
+        XCTAssertEqual(board.groups.first?.x, 130)
+        XCTAssertEqual(board.groups.first?.y, 0)
+        XCTAssertEqual(board.notes.first { $0.id == "c" }?.x, 900)
+        XCTAssertEqual(board.notes.first { $0.id == "c" }?.y, 100)
+    }
+
+    func testMarqueeCopyPasteDuplicatesNotesLinksAndEnclosedGroups() {
+        var board = Board(notes: [Note(id: "a", text: "A", x: 100, y: 30), Note(id: "b", text: "B", x: 400, y: 30), Note(id: "c", text: "C", x: 900, y: 30)])
+        var group = BoardGroup(id: "g", x: 80, y: 10)
+        group.memberIDs = ["a", "b"]
+        board.groups = [group]
+        board.connections = [Connection(id: "ab", from: "a", to: "b"), Connection(id: "bc", from: "b", to: "c")]
+        // A marquee over a and b encloses group g completely, so the copy carries it.
+        let enclosed = Set(board.groups
+            .filter { !($0.memberIDs ?? []).isEmpty }
+            .filter { ($0.memberIDs ?? []).allSatisfy { ["a", "b"].contains($0) } }
+            .map(\.id))
+        XCTAssertEqual(enclosed, ["g"])
+        let fragment = BoardFragment.capture(from: board, noteIDs: ["a", "b"], groupID: nil, connectionID: nil, extraGroupIDs: enclosed)
+        XCTAssertEqual(Set(fragment.notes.map(\.id)), ["a", "b"])
+        XCTAssertEqual(fragment.groups.map(\.id), ["g"])
+        XCTAssertEqual(fragment.connections.map(\.id), ["ab"])
+        let inserted = fragment.insert(into: &board, offset: 36)
+        XCTAssertEqual(inserted.notes.count, 2)
+        XCTAssertEqual(board.notes.count, 5)
+        XCTAssertEqual(board.groups.count, 2)
+        XCTAssertEqual(board.connections.count, 3)
+        XCTAssertEqual(Set(board.groups.last!.memberIDs!), Set(inserted.notes))
+        let copied = board.connections.first { $0.id != "ab" && $0.id != "bc" }!
+        XCTAssertEqual(copied.from, inserted.notes[0]); XCTAssertEqual(copied.to, inserted.notes[1])
+        XCTAssertEqual(board.notes.first { $0.id == inserted.notes[0] }?.x, 136)
+    }
+
     func testWallpaperPersistsValidatesAndAppearsInPDFHTML() throws {
         let store = try store()
         var board = try store.create(title: "Wallpaper", actor: "user")
