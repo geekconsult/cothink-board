@@ -34,4 +34,14 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 printf 'APPL????' > "$app/Contents/PkgInfo"
+# Strip Finder metadata and AppleDouble leftovers (legacy custom Icon file) —
+# codesign refuses to seal a bundle that carries them.
+xattr -cr "$app" 2>/dev/null || true
+find "$app" -name '._*' -type f -delete
+find "$app" -name 'Icon*' ! -name '*.icns' -delete
+# Seal the whole bundle with an ad-hoc signature so _CodeSignature/CodeResources
+# covers Info.plist and Resources. Without this the binary is only linker-signed,
+# and a quarantined download (browser) gets rejected as damaged by Gatekeeper.
+codesign --force --deep -s - "$app"
+codesign --verify --strict "$app"
 printf 'Built %s\n' "$app"
