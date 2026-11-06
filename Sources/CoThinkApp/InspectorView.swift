@@ -120,6 +120,7 @@ struct InspectorView: View {
     }
 
     private var inspectorSymbol: String {
+        if !selectedNotes.isEmpty { return "square.on.square" }
         if note != nil { return "note.text" }
         if group != nil { return "square.dashed" }
         if connection != nil { return "arrow.up.right" }
@@ -127,13 +128,14 @@ struct InspectorView: View {
     }
 
     private var inspectorTitle: String {
+        if !selectedNotes.isEmpty { return "\(selectedNotes.count) notes" }
         if note != nil { return "Note" }
         if group != nil { return "Group" }
         if connection != nil { return "Connection" }
         return "Board"
     }
 
-    private var hasObjectSelection: Bool { note != nil || group != nil || connection != nil }
+    private var hasObjectSelection: Bool { note != nil || group != nil || connection != nil || !model.selectedNoteIDs.isEmpty }
 
     @ViewBuilder
     private var selectionProperties: some View {
@@ -144,9 +146,7 @@ struct InspectorView: View {
         } else if let connection {
             connectionProperties(connection)
         } else if !model.selectedNoteIDs.isEmpty {
-            Text("\(model.selectedNoteIDs.count) notes selected").font(.headline)
-            Text("Choose Group to lock the selected notes together, or press Delete to remove them.")
-                .font(.callout).foregroundStyle(.secondary)
+            multiNoteProperties
         } else {
             boardProperties
         }
@@ -242,6 +242,111 @@ struct InspectorView: View {
                 }
             }
             strokeControls
+        }
+    }
+
+    private var selectedNotes: [Note] { board.notes.filter { model.selectedNoteIDs.contains($0.id) } }
+
+    /// Applies one property edit to every selected note in a single board revision.
+    private func applyToSelectedNotes(_ edit: @escaping (inout Note) -> Void) {
+        let ids = model.selectedNoteIDs
+        guard !ids.isEmpty else { return }
+        model.mutate { current in
+            for index in current.notes.indices where ids.contains(current.notes[index].id) {
+                edit(&current.notes[index])
+            }
+        }
+    }
+
+    /// Shared value across the selection, or nil when the selection is mixed.
+    /// The closure normalizes each note's value (e.g. optional → default) first,
+    /// so mixed defaults don't read as "mixed" unless the effective values differ.
+    private func multiUniform<T: Equatable>(_ value: (Note) -> T) -> T? {
+        guard let first = selectedNotes.first else { return nil }
+        let firstValue = value(first)
+        return selectedNotes.allSatisfy { value($0) == firstValue } ? firstValue : nil
+    }
+
+    @State private var multiApplyTask: Task<Void, Never>?
+
+    /// Debounced apply for continuous controls (color well, slider) so dragging
+    /// doesn't write a board revision per tick.
+    private func applyDebounced(_ edit: @escaping (inout Note) -> Void) {
+        multiApplyTask?.cancel()
+        multiApplyTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            applyToSelectedNotes(edit)
+        }
+    }
+
+    private var multiNoteProperties: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("\(selectedNotes.count) NOTES SELECTED").font(.caption.bold()).foregroundStyle(.secondary)
+            Text("Changes below apply to every selected note.")
+                .font(.caption).foregroundStyle(.secondary)
+            multiColors
+            multiFontSizeControl
+            multiStrokeControls
+            Button("Fit heights to content") {
+                applyToSelectedNotes { note in
+                    note.height = NoteContentSizing.height(for: note.text, fontSize: note.fontSize ?? 15, width: note.width)
+                }
+            }
+            .help("Resize every selected note to fit its own text")
+        }
+    }
+
+    private var multiColors: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("FILL COLOR").font(.caption.bold()).foregroundStyle(.secondary)
+            ColorPicker("Custom fill", selection: colorBinding(Binding(
+                get: { multiUniform { $0.color } ?? "#FFF1AF" },
+                set: { newColor in applyDebounced { $0.color = newColor } }
+            )), supportsOpacity: false)
+            HStack(spacing: 7) {
+                ForEach(["#FFF1AF", "#F9D8D5", "#DCECE9", "#DAE7F8", "#E8DDF3", "#FFFFFF"], id: \.self) { shade in
+                    Button { applyToSelectedNotes { $0.color = shade } } label: {
+                        Circle().fill(Color(hex: shade)).frame(width: 23, height: 23)
+                            .overlay(Circle().stroke(selectedNotes.allSatisfy { $0.color == shade } ? Color.accentColor : Color.secondary.opacity(0.4), lineWidth: selectedNotes.allSatisfy { $0.color == shade } ? 2 : 1))
+                    }.buttonStyle(.plain).help(shade)
+                }
+            }
+        }
+    }
+
+    private var multiFontSizeControl: some View {
+        Stepper(value: Binding(
+            get: { selectedNotes.first?.fontSize ?? 15 },
+            set: { newValue in applyToSelectedNotes { $0.fontSize = newValue } }
+        ), in: 6...96, step: 1) {
+            Text(multiUniform { $0.fontSize ?? 15 }.map { "Font size: \(Int($0)) pt" } ?? "Font size: mixed")
+        }
+    }
+
+    private var multiStrokeControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("BORDER").font(.caption.bold()).foregroundStyle(.secondary)
+            ColorPicker("Color", selection: colorBinding(Binding(
+                get: { multiUniform { $0.strokeColor ?? "#6F7785" } ?? "#6F7785" },
+                set: { newColor in applyDebounced { $0.strokeColor = newColor } }
+            )), supportsOpacity: false)
+            HStack {
+                Text("Width")
+                Slider(value: Binding(
+                    get: { multiUniform { $0.strokeWidth ?? 1 } ?? 1 },
+                    set: { newWidth in applyDebounced { $0.strokeWidth = newWidth } }
+                ), in: 0...12, step: 0.5)
+                Text((multiUniform { $0.strokeWidth ?? 1 } ?? 1).formatted(.number.precision(.fractionLength(1)))).monospacedDigit().frame(width: 28)
+            }
+            Picker("Style", selection: Binding(
+                get: { multiUniform { $0.strokeStyle ?? LineStyle.solid } ?? LineStyle.solid },
+                set: { newStyle in applyToSelectedNotes { $0.strokeStyle = newStyle } }
+            )) {
+                Text("Solid").tag(LineStyle.solid)
+                Text("Dashed").tag(LineStyle.dashed)
+                Text("Dotted").tag(LineStyle.dotted)
+            }.pickerStyle(.segmented)
         }
     }
 
@@ -441,11 +546,17 @@ struct InspectorView: View {
                 board.notes[i].fontSize = fontSize
                 board.notes[i].imagePath = imagePath.isEmpty ? nil : imagePath
                 board.notes[i].assetIDs = assetIDs
-                board.notes[i].width = max(80, width); board.notes[i].height = max(50, height); board.notes[i].color = color
+                board.notes[i].width = max(80, width)
+                if text != baseline.text || max(80, width) != baseline.width {
+                    board.notes[i].height = NoteContentSizing.height(for: text, fontSize: fontSize, width: max(80, width))
+                } else {
+                    board.notes[i].height = max(50, height)
+                }
+                board.notes[i].color = color
                 board.notes[i].strokeColor = strokeColor; board.notes[i].strokeWidth = strokeWidth; board.notes[i].strokeStyle = strokeStyle
             }) {
                 baselineNote = model.board?.notes.first(where: { $0.id == baseline.id })
-                if let saved = baselineNote { x = saved.x; y = saved.y }
+                if let saved = baselineNote { x = saved.x; y = saved.y; height = saved.height }
                 saveStatus = "Saved"
             }
             else { model.draftBlocked = true; saveStatus = "Not saved" }

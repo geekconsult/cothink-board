@@ -130,6 +130,9 @@ final class BoardViewModel: ObservableObject {
     @Published var selectedGroupID: String?
     @Published var selectedConnectionID: String?
     @Published var connectingFrom: String?
+    /// Note the canvas should drop into inline editing as soon as it appears —
+    /// set by every note-creation path so new notes open straight into typing.
+    @Published var pendingInlineEditID: String?
     @Published var error: String?
     /// True while the Home page is showing; board-canvas menu commands disable themselves.
     @Published var homeVisible = true
@@ -251,18 +254,19 @@ final class BoardViewModel: ObservableObject {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked else { return }
         let id = UUID().uuidString
-        mutate { $0.notes.append(Note(id: id, text: "New idea", x: x, y: y, width: 190, height: 100, color: "#FFF1AF")) }
+        mutate { $0.notes.append(Note(id: id, text: "", x: x, y: y, width: 190, height: 100, color: "#FFF1AF")) }
         selectedNoteID = id
         selectedNoteIDs = []
         selectedGroupID = nil
         selectedConnectionID = nil
+        pendingInlineEditID = id
     }
 
     func addAdjacentNote(toRight: Bool) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked, let sourceID = selectedNoteID,
               let source = board?.notes.first(where: { $0.id == sourceID }) else { return }
-        let note = Note(text: "New idea", x: toRight ? source.x + source.width + 70 : source.x,
+        let note = Note(text: "", x: toRight ? source.x + source.width + 70 : source.x,
                         y: toRight ? source.y : source.y + source.height + 70,
                         width: 190, height: 100, color: "#FFF1AF")
         if mutate({ board in
@@ -270,6 +274,7 @@ final class BoardViewModel: ObservableObject {
             if toRight { board.connections.append(Connection(from: source.id, to: note.id, direction: .oneWay)) }
         }) {
             selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+            pendingInlineEditID = note.id
         }
     }
 
@@ -278,12 +283,13 @@ final class BoardViewModel: ObservableObject {
         guard !draftBlocked, let current = board,
               let parent = current.notes.first(where: { $0.id == sourceID }) else { return }
         let lastChild = current.children(of: sourceID).last
-        let note = Note(text: "New idea",
+        let note = Note(text: "",
                         x: parent.x + parent.width + 60,
                         y: lastChild.map { $0.y + $0.height + 24 } ?? parent.y,
                         width: 200, height: 100, color: "#FFF1AF", parentID: sourceID)
         if mutate({ $0.notes.append(note) }) {
             selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+            pendingInlineEditID = note.id
         }
     }
 
@@ -292,11 +298,12 @@ final class BoardViewModel: ObservableObject {
         guard !draftBlocked, let current = board,
               let index = current.notes.firstIndex(where: { $0.id == noteID }) else { return }
         let sibling = current.notes[index]
-        let note = Note(text: "New idea",
+        let note = Note(text: "",
                         x: sibling.x, y: sibling.y + sibling.height + 24,
                         width: 200, height: 100, color: "#FFF1AF", parentID: sibling.parentID)
         if mutate({ $0.notes.insert(note, at: index + 1) }) {
             selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
+            pendingInlineEditID = note.id
         }
     }
 
@@ -703,6 +710,11 @@ struct WorkspaceView: View {
               : Color(red: 0.58, green: 0.25, blue: 0.13))
         .onAppear { model.homeVisible = showingHome; registerAuxiliaryWindows() }
         .onChange(of: showingHome) { _, visible in model.homeVisible = visible }
+        .onChange(of: model.pendingInlineEditID) { _, id in
+            guard let id, let note = model.board?.notes.first(where: { $0.id == id }) else { return }
+            beginInlineEditing(note)
+            model.pendingInlineEditID = nil
+        }
         .onReceive(timer) { _ in model.poll() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
         .onReceive(NotificationCenter.default.publisher(for: .requestDeleteSelectionCommand)) { _ in requestDeleteSelection() }
@@ -1557,9 +1569,11 @@ struct WorkspaceView: View {
             }
         } else {
             guard let note = board.notes.first(where: { $0.id == id }), note.text != value else { return }
+            let fittedHeight = NoteContentSizing.height(for: value, fontSize: note.fontSize ?? 15, width: note.width)
             model.mutate { current in
                 guard let index = current.notes.firstIndex(where: { $0.id == id }) else { return }
                 current.notes[index].text = value
+                current.notes[index].height = fittedHeight
             }
         }
     }
