@@ -255,4 +255,15 @@ done
         controller.stop()
     }
 
+    func testBoardSkillPromptCoversRoundToolMapAndRules() {
+        let prompt = CoThinkBoardSkill.systemPrompt
+        XCTAssertTrue(prompt.contains("The round"), "The prompt must teach the read → plan → edit → verify round.")
+        XCTAssertTrue(prompt.contains("one edit call"))
+        XCTAssertTrue(prompt.contains("capture_board"), "The prompt must route layout verification through capture_board.")
+        XCTAssertTrue(prompt.contains("export_board_pdf"))
+        XCTAssertTrue(prompt.contains("Never guess an id"))
+        XCTAssertTrue(prompt.contains("Revision scopes"))
+        XCTAssertFalse(prompt.contains("cloud"), "The in-app Pi only has the local server; the prompt must not teach cloud tools.")
+    }
+
 }

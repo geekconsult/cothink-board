@@ -140,7 +140,7 @@ public final class PiChatController: ObservableObject {
         case .newSession: break
         case .resume(let path): arguments += ["--session", path]
         }
-        arguments += ["--session-dir", sessionDirectory.path, "--no-extensions", "--extension", extensionPath, "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-context-files", "--offline", "--append-system-prompt", "You are assisting with the current CoThink board. Use the CoThink tools to read context and make requested edits. Board ID: \(boardID). Obtain fresh revisions before edits. If an edit reports a revision conflict, read the current board again, reconsider the user's requested change against the new state, and retry with its new revision only when appropriate. Explain if you cannot safely complete the request. Do not claim actions succeeded if a tool returned an error."]
+        arguments += ["--session-dir", sessionDirectory.path, "--no-extensions", "--extension", extensionPath, "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-context-files", "--offline", "--append-system-prompt", "You are assisting with the current CoThink board. Board ID: \(boardID). Reply in the language the user writes in, often Thai. Explain when you cannot safely complete a request, and never claim an action succeeded when a tool returned an error.", "--append-system-prompt", CoThinkBoardSkill.systemPrompt]
         if FileManager.default.fileExists(atPath: memoryURL.path) {
             arguments += ["--append-system-prompt", memoryURL.path]
         }
