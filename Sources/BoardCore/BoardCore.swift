@@ -6,7 +6,7 @@ public enum LineStyle: String, Codable, CaseIterable {
 }
 
 public enum NoteShape: String, Codable, CaseIterable {
-    case rectangle, ellipse, diamond, line
+    case rectangle, ellipse, diamond, line, text
 }
 
 public enum ConnectionDirection: String, Codable, CaseIterable {
@@ -79,12 +79,12 @@ public struct Note: Codable, Identifiable, Equatable {
     }
 
     public static func makeShape(_ shape: NoteShape, x: Double, y: Double, width: Double? = nil, height: Double? = nil, flipped: Bool = false) -> Note {
-        var note = Note(text: "", x: x, y: y, width: width ?? 160, height: height ?? (shape == .line ? 80 : 120), color: "#F3F1EC", shape: shape)
+        var note = Note(text: "", x: x, y: y, width: width ?? 160, height: height ?? (shape == .line ? 80 : shape == .text ? 40 : 120), color: "#F3F1EC", shape: shape)
         note.lineFlipped = shape == .line ? flipped : nil
         return note
     }
 
-    public var autofitsHeight: Bool { shape == nil }
+    public var autofitsHeight: Bool { shape == nil || shape == .text }
 
     // A line is the diagonal of its bounding box, so a zero extent is legitimate for line notes only.
     public var hasValidExtent: Bool {

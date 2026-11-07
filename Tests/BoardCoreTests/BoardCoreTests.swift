@@ -339,7 +339,7 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertEqual(rect.resized(from: .topLeft, dx: 500, dy: 500), BoardRect(x: 220, y: 150, width: 80, height: 50))
     }
     func testShapeFactoryDefaults() {
-        let expected: [NoteShape: (Double, Double)] = [.rectangle: (160, 120), .ellipse: (160, 120), .diamond: (160, 120), .line: (160, 80)]
+        let expected: [NoteShape: (Double, Double)] = [.rectangle: (160, 120), .ellipse: (160, 120), .diamond: (160, 120), .line: (160, 80), .text: (160, 40)]
         for (shape, size) in expected {
             let note = Note.makeShape(shape, x: 40, y: 60)
             XCTAssertFalse(note.id.isEmpty)
@@ -349,6 +349,12 @@ final class BoardCoreTests: XCTestCase {
             XCTAssertEqual(note.shape, shape)
             XCTAssertEqual(note.text, "")
         }
+    }
+
+    func testTextShapeAutofitsHeight() {
+        XCTAssertTrue(Note(id: "t", shape: .text).autofitsHeight)
+        XCTAssertFalse(Note(id: "r", shape: .rectangle).autofitsHeight)
+        XCTAssertTrue(Note(id: "n").autofitsHeight)
     }
 
     func testBoardRectResizedHonorsCustomMinimums() {
@@ -749,6 +755,18 @@ final class BoardCoreTests: XCTestCase {
         let flipped = BoardPDFHTML.svg(board: lineBoard(flipped: true), images: [:])
         XCTAssertTrue(flipped.contains("x1=\"110.00\""))
         XCTAssertTrue(flipped.contains("x2=\"10.00\""))
+    }
+
+    func testSvgTextShapeRendersBareText() {
+        func textBoard(_ text: String) -> Board {
+            Board(notes: [Note(id: "t", text: text, x: 10, y: 20, width: 160, height: 40, color: "#F3F1EC", shape: .text)])
+        }
+        let svg = BoardPDFHTML.svg(board: textBoard("Hi"), images: [:])
+        XCTAssertFalse(svg.contains("<rect x=\"10.00\""))
+        XCTAssertTrue(svg.contains(">Hi<"))
+        let empty = BoardPDFHTML.svg(board: textBoard(""), images: [:])
+        XCTAssertFalse(empty.contains(">Hi<"))
+        XCTAssertFalse(empty.contains("<rect x=\"10.00\""))
     }
 
     func testSVGOverviewHidesFoldedSubtree() {

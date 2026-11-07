@@ -184,6 +184,7 @@ public enum BoardPDFHTML {
             let fill = color(n.color, fallback: "#FFF1B8")
             let stroke = color(n.strokeColor, fallback: "#939aa4")
             let strokeAttrs = n.shape == nil ? "" : " stroke-width=\"\(number(n.strokeWidth ?? 1))\"\(n.strokeStyle == .dashed ? " stroke-dasharray=\"8 5\"" : n.strokeStyle == .dotted ? " stroke-dasharray=\"1 4\"" : "")"
+            let labelFill = n.shape == .text ? "#272727" : textColor(on: fill)
             let fontSize = min(n.fontSize ?? 15, 22)
             let imageSource = (["legacy:\(n.id)"] + (n.assetIDs ?? [])).compactMap { images[$0] }.first { $0.hasPrefix("data:image/") }
             let image = imageSource.map { "<image href=\"\(escape($0))\" x=\"\(number(n.x+10))\" y=\"\(number(n.y+n.height*0.45))\" width=\"\(number(max(0,n.width-20)))\" height=\"\(number(max(0,n.height*0.45)))\" preserveAspectRatio=\"xMidYMid meet\"/>" } ?? ""
@@ -197,14 +198,16 @@ public enum BoardPDFHTML {
                 card = "<ellipse cx=\"\(number(n.x+n.width/2))\" cy=\"\(number(n.y+n.height/2))\" rx=\"\(number(n.width/2))\" ry=\"\(number(n.height/2))\" fill=\"\(fill)\" stroke=\"\(stroke)\"\(strokeAttrs)/>"
             case .diamond:
                 card = "<polygon points=\"\(number(n.x+n.width/2)),\(number(n.y)) \(number(n.x+n.width)),\(number(n.y+n.height/2)) \(number(n.x+n.width/2)),\(number(n.y+n.height)) \(number(n.x)),\(number(n.y+n.height/2))\" fill=\"\(fill)\" stroke=\"\(stroke)\"\(strokeAttrs)/>"
+            case .text:
+                card = ""
             default:
                 card = "<rect x=\"\(number(n.x))\" y=\"\(number(n.y))\" width=\"\(number(n.width))\" height=\"\(number(n.height))\" rx=\"\(n.shape == nil ? 9 : 6)\" fill=\"\(fill)\" stroke=\"\(stroke)\"\(strokeAttrs)/>"
             }
             let label = n.shape == .line || (n.shape != nil && n.text.isEmpty) ? "" :
                 "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath>" +
-                (n.shape == nil
-                    ? "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>"
-                    : "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+n.width/2))\" y=\"\(number(n.y+n.height/2+fontSize*0.35))\" text-anchor=\"middle\" fill=\"\(textColor(on: fill))\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>")
+                (n.shape == nil || n.shape == .text
+                    ? "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(labelFill)\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>"
+                    : "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+n.width/2))\" y=\"\(number(n.y+n.height/2+fontSize*0.35))\" text-anchor=\"middle\" fill=\"\(labelFill)\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>")
             return "\(card)\(label)\(image)\(foldBadge)"
         }.joined()
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(treeEdges)\(edges)\(cards)</g></svg>"
