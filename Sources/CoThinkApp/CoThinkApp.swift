@@ -211,6 +211,27 @@ final class BoardViewModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    func moveBoard(id: String, to anchor: BoardAnchor) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let store else { return }
+        do { try store.move(boardID: id, to: anchor); try refresh() }
+        catch { self.error = error.localizedDescription; try? refresh() }
+    }
+
+    func deleteBoards(_ ids: [String]) {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked else { return }
+        let present = Set(boards.map(\.id))
+        let targets = ids.filter { present.contains($0) }
+        guard !targets.isEmpty, let store else { return }
+        do {
+            try store.deleteBoards(targets)
+            if let current = board, targets.contains(current.id) { board = nil; clearSelection() }
+            try refresh()
+            if board == nil, let first = boards.first { selectBoard(first.id) }
+        } catch { self.error = error.localizedDescription; try? refresh() }
+    }
+
     @discardableResult
     func createList() -> BoardList? {
         do { guard let store else { return nil }; let created = try store.createList(title: "Untitled list"); try refresh(); return created }
@@ -625,6 +646,7 @@ struct WorkspaceView: View {
     @State private var inlineText = ""
     @State private var inlineSaveTask: Task<Void, Never>?
     @State private var showingDeleteBoard = false
+    @State private var showingDeleteBoards = false
     @State private var showingDeleteSelection = false
     @State private var showingMCP = false
     @State private var showingProjectFiles = false
@@ -637,6 +659,11 @@ struct WorkspaceView: View {
     @State private var showingBoardSettings = false
     @State private var draggingID: String?
     @State private var draggingSelection = false
+    @State private var sidebarSelection: Set<String> = []
+    @State private var sidebarSelectionAnchor: String?
+    @State private var dropRowID: String?
+    @State private var dropBelow = false
+    @State private var dropVisible = false
     @State private var viewport = CGRect.zero
     @State private var scrollRequest: CGPoint?
     @State private var dragTranslation: CGSize = .zero
@@ -702,7 +729,7 @@ struct WorkspaceView: View {
     }
 
     private var dialogAndCommandLayer: some View {
-        rootContent
+        let base = rootContent
         .background(workspaceBackground)
         .preferredColorScheme(appearanceMode == "light" ? .light : appearanceMode == "dark" ? .dark : nil)
         .tint(colorScheme == .dark
@@ -710,6 +737,10 @@ struct WorkspaceView: View {
               : Color(red: 0.58, green: 0.25, blue: 0.13))
         .onAppear { model.homeVisible = showingHome; registerAuxiliaryWindows() }
         .onChange(of: showingHome) { _, visible in model.homeVisible = visible }
+        .onChange(of: model.board?.id) { _, id in
+            sidebarSelection = id.map { [$0] } ?? []
+            sidebarSelectionAnchor = id
+        }
         .onChange(of: model.pendingInlineEditID) { _, id in
             guard let id, let note = model.board?.notes.first(where: { $0.id == id }) else { return }
             beginInlineEditing(note)
@@ -731,9 +762,18 @@ struct WorkspaceView: View {
         .alert("Unable to complete action", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
+        return base
         .confirmationDialog("Delete this board?", isPresented: $showingDeleteBoard) {
             Button("Delete Board", role: .destructive) { model.deleteBoard() }
         } message: { Text("This removes the board and its history from this Mac.") }
+        .confirmationDialog("Delete \(sidebarSelection.count) boards?", isPresented: $showingDeleteBoards, titleVisibility: .visible) {
+            Button("Delete \(sidebarSelection.count) Boards", role: .destructive) {
+                model.deleteBoards(Array(sidebarSelection))
+                sidebarSelection = []
+                sidebarSelectionAnchor = nil
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("This removes \(sidebarSelection.count) boards and their history from this Mac.") }
         .confirmationDialog("Delete this list?", isPresented: $showingDeleteList) {
             Button("Delete List", role: .destructive) { if let list = listToDelete { model.deleteList(list) }; listToDelete = nil }
         } message: { Text("Boards in the list will remain available.") }
@@ -769,38 +809,29 @@ struct WorkspaceView: View {
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                MascotLogo().frame(width: 38, height: 38)
-                Spacer()
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search boards and notes", text: $search)
+                        .textFieldStyle(.plain).accessibilityLabel("Search boards and notes")
+                        .frame(minWidth: 60)
+                    if !search.isEmpty {
+                        Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).help("Clear search").accessibilityLabel("Clear search")
+                    }
+                }
+                .font(.callout).padding(.horizontal, 10).padding(.vertical, 8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.primary.opacity(0.08)))
                 Button { editingListID = nil; showingListManager = true } label: { Image(systemName: "folder.badge.gearshape").frame(width: 20, height: 20) }
                     .buttonStyle(.plain).modifier(GlassControl()).help("Create, rename, or delete lists").accessibilityLabel("Manage lists")
                 Button(action: model.createBoard) { Image(systemName: "plus").frame(width: 20, height: 20) }
                     .buttonStyle(.plain).modifier(GlassControl()).help("New board").accessibilityLabel("New board")
             }.padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 12)
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search boards and notes", text: $search)
-                    .textFieldStyle(.plain).accessibilityLabel("Search boards and notes")
-                if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain).help("Clear search").accessibilityLabel("Clear search")
-                }
-            }
-            .font(.callout).padding(.horizontal, 10).padding(.vertical, 8)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.primary.opacity(0.08)))
-            .padding(.horizontal, 12).padding(.bottom, 8)
             List {
                 ForEach(model.boardLists) { list in
                     Section {
-                        ForEach(model.boards.filter { list.boardIDs.contains($0.id) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })) }) { board in
-                            boardSidebarLabel(board)
-                                .contentShape(Rectangle())
-                                .onTapGesture { model.selectBoard(board.id) }
-                                .listRowBackground(Group {
-                                    if model.board?.id == board.id {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor.opacity(0.16))
-                                    }
-                                })
+                        ForEach(model.boards.filter { list.boardIDs.contains($0.id) && sidebarRowMatchesSearch($0, includeTags: false) }) { board in
+                            sidebarBoardRow(board)
                         }
                     } header: {
                         HStack {
@@ -818,17 +849,8 @@ struct WorkspaceView: View {
                     }
                 }
                 Section {
-                ForEach(model.boards.filter { board in
-                    search.isEmpty || board.title.localizedCaseInsensitiveContains(search) || (board.tags ?? []).contains(where: { $0.localizedCaseInsensitiveContains(search) }) || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
-                }) { board in
-                    boardSidebarLabel(board)
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.selectBoard(board.id) }
-                        .listRowBackground(Group {
-                            if model.board?.id == board.id {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor.opacity(0.16))
-                            }
-                        })
+                ForEach(model.boards.filter { sidebarRowMatchesSearch($0, includeTags: true) }) { board in
+                    sidebarBoardRow(board)
                 }
                 } header: {
                     Text("All boards")
@@ -845,7 +867,7 @@ struct WorkspaceView: View {
                     if !model.draftBlocked { showingBoardSettings = true }
                 } label: { Image(systemName: "slider.horizontal.3") }
                     .buttonStyle(.plain).modifier(GlassControl()).disabled(model.board == nil).help("Board settings").accessibilityLabel("Board settings")
-                Button { showingDeleteBoard = true } label: { Image(systemName: "trash") }
+                Button { sidebarTrashAction() } label: { Image(systemName: "trash") }
                     .buttonStyle(.plain).modifier(GlassControl()).disabled(model.board == nil).help("Delete board").accessibilityLabel("Delete board")
             }.padding(.horizontal, 12).padding(.vertical, 12)
         }.background(.thinMaterial)
@@ -862,6 +884,84 @@ struct WorkspaceView: View {
             if board.flagged == true { Image(systemName: "flag.fill").font(.caption).foregroundStyle(.secondary) }
         }
         .onDrag { NSItemProvider(object: board.id as NSString) }
+    }
+
+    func sidebarBoardRow(_ board: Board) -> some View {
+        boardSidebarLabel(board)
+            .contentShape(Rectangle())
+            .onTapGesture { sidebarRowTap(board.id) }
+            .onDrop(of: [UTType.plainText], delegate: SidebarRowDropDelegate(board: board, workspace: self))
+            .listRowBackground(Group {
+                if model.board?.id == board.id || sidebarSelection.contains(board.id) {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor.opacity(0.16))
+                }
+                if dropVisible && dropRowID == board.id {
+                    GeometryReader { geo in
+                        Capsule().fill(Color.accentColor).frame(width: geo.size.width - 16, height: 3)
+                            .frame(maxWidth: .infinity)
+                            .offset(y: dropBelow ? geo.size.height - 3 : 0).padding(.horizontal, 8)
+                    }
+                }
+            })
+    }
+
+    func sidebarRowMatchesSearch(_ board: Board, includeTags: Bool) -> Bool {
+        search.isEmpty || board.title.localizedCaseInsensitiveContains(search)
+            || (includeTags && (board.tags ?? []).contains(where: { $0.localizedCaseInsensitiveContains(search) }))
+            || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
+    }
+
+    var sidebarVisibleOrder: [String] {
+        var seen = Set<String>()
+        var order: [String] = []
+        for list in model.boardLists {
+            for board in model.boards where list.boardIDs.contains(board.id) && sidebarRowMatchesSearch(board, includeTags: false) {
+                if seen.insert(board.id).inserted { order.append(board.id) }
+            }
+        }
+        for board in model.boards where sidebarRowMatchesSearch(board, includeTags: true) {
+            if seen.insert(board.id).inserted { order.append(board.id) }
+        }
+        return order
+    }
+
+    func sidebarRowTap(_ id: String) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if sidebarSelection.isEmpty, let current = model.board?.id { sidebarSelection = [current] }
+            if sidebarSelection.contains(id) { sidebarSelection.remove(id) } else { sidebarSelection.insert(id) }
+            return
+        }
+        if flags.contains(.shift), let start = sidebarSelectionAnchor ?? model.board?.id {
+            let order = sidebarVisibleOrder
+            if let i = order.firstIndex(of: start), let j = order.firstIndex(of: id), i != j {
+                let (lo, hi) = i < j ? (i, j) : (j, i)
+                sidebarSelection = Set(order[lo...hi])
+                return
+            }
+        }
+        sidebarSelection = [id]
+        sidebarSelectionAnchor = id
+        model.selectBoard(id)
+    }
+
+    func performReorderDrop(_ providers: [NSItemProvider], target: Board) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadItem(forTypeIdentifier: "public.utf8-plain-text", options: nil) { item, _ in
+            let boardID: String? = {
+                if let text = item as? String { return text as String }
+                if let data = item as? Data { return String(data: data, encoding: .utf8) }
+                return nil
+            }()
+            Task { @MainActor in
+                defer { self.dropRowID = nil; self.dropVisible = false; self.dropBelow = false }
+                guard let boardID else { return }
+                let sibling = self.dropRowID ?? target.id
+                let anchor = self.dropBelow ? BoardAnchor.after(sibling) : BoardAnchor.before(sibling)
+                self.model.moveBoard(id: boardID, to: anchor)
+            }
+        }
+        return true
     }
 
     /// Drops a dragged board onto a list header (moves it into the list) or onto the
@@ -890,6 +990,41 @@ struct WorkspaceView: View {
             }
         }
         return true
+    }
+
+    struct SidebarRowDropDelegate: DropDelegate {
+        let board: Board
+        let workspace: WorkspaceView
+
+        func dropEntered(info: DropInfo) {
+            if workspace.dropRowID == board.id { return }
+            let order = workspace.sidebarVisibleOrder
+            if let old = workspace.dropRowID, let i = order.firstIndex(of: old), let j = order.firstIndex(of: board.id) {
+                workspace.dropBelow = j < i
+            } else {
+                workspace.dropBelow = false
+            }
+            workspace.dropRowID = board.id
+            workspace.dropVisible = true
+        }
+
+        func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+        // Only the row owning the indicator may hide it; a late dropExited from the
+        // previous row must not hide a hover that dropEntered already moved elsewhere.
+        func dropExited(info: DropInfo) {
+            if workspace.dropRowID == board.id { workspace.dropVisible = false }
+        }
+
+        func performDrop(info: DropInfo) -> Bool {
+            _ = workspace.performReorderDrop(info.itemProviders(for: [UTType.plainText]), target: board)
+            return true
+        }
+    }
+
+    func sidebarTrashAction() {
+        if sidebarSelection.count > 1 { showingDeleteBoards = true }
+        else { showingDeleteBoard = true }
     }
 
     /// Registers auxiliary window factories with the LIVE model/session instances.
