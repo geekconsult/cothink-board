@@ -1163,7 +1163,7 @@ struct WorkspaceView: View {
                 } else if drawingGroup {
                     Text("Drag on the canvas to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if let tool = shapeTool {
-                    Text("Drag on the canvas to draw a \(tool.rawValue) · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text("Drag on the canvas to draw a \(tool.rawValue) · ⌘-drag to select · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if let start = selectionStart, let end = selectionEnd, let board {
                     let hidden = board.hiddenNoteIDs()
                     let marqueeCount = board.notes.filter { !hidden.contains($0.id) && BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
@@ -1288,7 +1288,8 @@ struct WorkspaceView: View {
                         })
                     .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("boardCanvas"))
                         .onChanged { value in
-                            if shapeTool != nil {
+                            // While a shape tool is armed, ⌘-drag still marquees.
+                            if shapeTool != nil, selectionStart == nil, shapeDraft != nil || !NSEvent.modifierFlags.contains(.command) {
                                 if shapeDraft == nil {
                                     finishInlineEditing()
                                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -1309,9 +1310,9 @@ struct WorkspaceView: View {
                             }
                             selectionEnd = value.location
                         }.onEnded { value in
-                            if let tool = shapeTool {
+                            if let tool = shapeTool, shapeDraft != nil {
                                 defer { shapeDraft = nil }
-                                guard shapeDraft != nil, !model.draftBlocked else { return }
+                                guard !model.draftBlocked else { return }
                                 let dx = value.location.x - value.startLocation.x
                                 let dy = value.location.y - value.startLocation.y
                                 let frame: BoardRect
