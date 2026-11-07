@@ -318,6 +318,18 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Board.self, from: JSONEncoder().encode(saved)), saved)
     }
 
+    func testShapeFieldDecodesLegacyJSONAsNil() throws {
+        let json = """
+        {"id":"n1","text":"Note","x":10,"y":20,"width":200,"height":100,"color":"#FFFFFF"}
+        """
+        let note = try JSONDecoder().decode(Note.self, from: Data(json.utf8))
+        XCTAssertNil(note.shape)
+        var ellipse = Note(id: "e", x: 10, y: 20, width: 200, height: 100)
+        ellipse.shape = .ellipse
+        let decoded = try JSONDecoder().decode(Note.self, from: JSONEncoder().encode(ellipse))
+        XCTAssertEqual(decoded.shape, .ellipse)
+    }
+
     func testResizeCornersKeepOppositeCornerAndMinimumSize() {
         let rect = BoardRect(x: 100, y: 100, width: 200, height: 100)
         XCTAssertEqual(rect.resized(from: .topLeft, dx: 30, dy: 20), BoardRect(x: 130, y: 120, width: 170, height: 80))
@@ -326,6 +338,36 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertEqual(rect.resized(from: .bottomRight, dx: 30, dy: 20), BoardRect(x: 100, y: 100, width: 230, height: 120))
         XCTAssertEqual(rect.resized(from: .topLeft, dx: 500, dy: 500), BoardRect(x: 220, y: 150, width: 80, height: 50))
     }
+    func testShapeFactoryDefaults() {
+        let expected: [NoteShape: (Double, Double)] = [.rectangle: (160, 120), .ellipse: (160, 120), .diamond: (160, 120), .line: (160, 80)]
+        for (shape, size) in expected {
+            let note = Note.makeShape(shape, x: 40, y: 60)
+            XCTAssertFalse(note.id.isEmpty)
+            XCTAssertEqual(note.x, 40); XCTAssertEqual(note.y, 60)
+            XCTAssertEqual(note.width, size.0); XCTAssertEqual(note.height, size.1)
+            XCTAssertEqual(note.color, "#F3F1EC")
+            XCTAssertEqual(note.shape, shape)
+            XCTAssertEqual(note.text, "")
+        }
+    }
+
+    func testBoardRectResizedHonorsCustomMinimums() {
+        let rect = BoardRect(x: 100, y: 100, width: 200, height: 100)
+        XCTAssertEqual(rect.resized(from: .bottomRight, dx: -40, dy: -99, minWidth: 1, minHeight: 1), BoardRect(x: 100, y: 100, width: 160, height: 1))
+        XCTAssertEqual(rect.resized(from: .bottomRight, dx: -40, dy: -99), BoardRect(x: 100, y: 100, width: 160, height: 50))
+    }
+
+    func testLineNoteGeometryValidationAllowsZeroHeight() throws {
+        let store = try store()
+        var lineBoard = try store.create(title: "Lines", actor: "test")
+        lineBoard.notes = [Note(id: "l", x: 100, y: 100, width: 160, height: 0, color: "#F3F1EC", shape: .line)]
+        XCTAssertNoThrow(try store.replace(lineBoard, expectedRevision: 0, actor: "test"))
+        let flatBoard = Board(notes: [Note(id: "l", x: 100, y: 100, width: 160, height: 0, color: "#F3F1EC")])
+        XCTAssertThrowsError(try store.importBoard(flatBoard, actor: "test")) { error in
+            guard case BoardError.invalid = error else { return XCTFail("expected BoardError.invalid, got \(error)") }
+        }
+    }
+
     func store() throws -> BoardStore {
         try BoardStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
     }

@@ -5,6 +5,10 @@ public enum LineStyle: String, Codable, CaseIterable {
     case solid, dashed, dotted
 }
 
+public enum NoteShape: String, Codable, CaseIterable {
+    case rectangle, ellipse, diamond, line
+}
+
 public enum ConnectionDirection: String, Codable, CaseIterable {
     case oneWay, twoWay, none
 }
@@ -59,17 +63,34 @@ public struct Note: Codable, Identifiable, Equatable {
     public var strokeColor: String?
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
+    public var shape: NoteShape?
     public var imagePath: String?
     public var assetIDs: [String]?
     public var parentID: String?
     public var collapsed: Bool?
-    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil, collapsed: Bool? = nil) {
+    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil, collapsed: Bool? = nil, shape: NoteShape? = nil) {
         self.id = id; self.text = text; self.x = x; self.y = y; self.width = width; self.height = height; self.color = color
         self.imagePath = imagePath
         self.assetIDs = []
         self.parentID = parentID
         self.collapsed = collapsed
+        self.shape = shape
     }
+
+    public static func makeShape(_ shape: NoteShape, x: Double, y: Double) -> Note {
+        Note(text: "", x: x, y: y, width: 160, height: shape == .line ? 80 : 120, color: "#F3F1EC", shape: shape)
+    }
+
+    public var autofitsHeight: Bool { shape == nil }
+
+    // A line is the diagonal of its bounding box, so a zero extent is legitimate for line notes only.
+    public var hasValidExtent: Bool {
+        shape == .line ? width > 0 || height > 0 : width > 0 && height > 0
+    }
+
+    // Interactive edits clamp to 1 (not 0) for lines so the result always passes hasValidExtent.
+    public var extentMinWidth: Double { shape == .line ? 1 : 80 }
+    public var extentMinHeight: Double { shape == .line ? 1 : 50 }
 }
 public struct ProjectAsset: Codable, Identifiable, Equatable {
     public var id: String
@@ -643,6 +664,6 @@ public final class BoardStore {
             }
         }
         guard b.connections.allSatisfy({ noteIDs.contains($0.from) && noteIDs.contains($0.to) && $0.from != $0.to }) else { throw BoardError.invalid("connection endpoints") }
-        guard b.notes.allSatisfy({ [$0.x,$0.y,$0.width,$0.height].allSatisfy(\.isFinite) && $0.width > 0 && $0.height > 0 }), b.groups.allSatisfy({ [$0.x,$0.y,$0.width,$0.height].allSatisfy(\.isFinite) && $0.width > 0 && $0.height > 0 }) else { throw BoardError.invalid("geometry") }
+        guard b.notes.allSatisfy({ [$0.x,$0.y,$0.width,$0.height].allSatisfy(\.isFinite) && $0.hasValidExtent }), b.groups.allSatisfy({ [$0.x,$0.y,$0.width,$0.height].allSatisfy(\.isFinite) && $0.width > 0 && $0.height > 0 }) else { throw BoardError.invalid("geometry") }
     }
 }
