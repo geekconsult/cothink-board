@@ -184,6 +184,57 @@ final class BoardCoreTests: XCTestCase {
         try store.deleteList(after.id, expectedRevision: after.revision)
         XCTAssertTrue(try store.lists().isEmpty)
     }
+    func testMoveBoardAnchorsReorderEntriesAndPersist() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = try BoardStore(directory: dir)
+        let created = try ["a", "b", "c", "d"].map { try store.create(title: $0, actor: "user") }
+        let ids = created.map(\.id)
+        try store.move(boardID: ids[1], to: .top)
+        XCTAssertEqual(try store.list().map(\.title), ["b", "a", "c", "d"])
+        try store.move(boardID: ids[1], to: .after(ids[3]))
+        XCTAssertEqual(try store.list().map(\.title), ["a", "c", "d", "b"])
+        try store.move(boardID: ids[2], to: .before(ids[0]))
+        XCTAssertEqual(try store.list().map(\.title), ["c", "a", "d", "b"])
+        try store.move(boardID: ids[1], to: .bottom)
+        XCTAssertEqual(try store.list().map(\.title), ["c", "a", "d", "b"])
+        try store.move(boardID: ids[0], to: .top)
+        XCTAssertEqual(try store.list().map(\.title), ["a", "c", "d", "b"])
+        let reopened = try BoardStore(directory: dir)
+        XCTAssertEqual(try reopened.list().map(\.title), ["a", "c", "d", "b"])
+        XCTAssertEqual(try reopened.list().map(\.revision), [0, 0, 0, 0])
+    }
+    func testMoveBoardEdgeCases() throws {
+        let store = try store()
+        let created = try ["a", "b", "c"].map { try store.create(title: $0, actor: "user") }
+        let ids = created.map(\.id)
+        XCTAssertThrowsError(try store.move(boardID: "missing", to: .top))
+        try store.move(boardID: ids[0], to: .before("no-such-board"))
+        XCTAssertEqual(try store.list().map(\.title), ["b", "c", "a"])
+        try store.move(boardID: ids[0], to: .after(ids[0]))
+        XCTAssertEqual(try store.list().map(\.title), ["b", "c", "a"])
+        try store.move(boardID: ids[0], to: .before(ids[2]))
+        XCTAssertEqual(try store.list().map(\.title), ["b", "a", "c"])
+    }
+    func testDeleteBoardsAtomicWithSingleListRevisionBump() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = try BoardStore(directory: dir)
+        let created = try ["a", "b", "c"].map { try store.create(title: $0, actor: "user") }
+        let ids = created.map(\.id)
+        var list = try store.createList(title: "Research")
+        list.boardIDs = ids
+        let saved = try store.replaceList(list, expectedRevision: 0)
+        try store.deleteBoards([ids[0], ids[1]])
+        XCTAssertEqual(try store.list().map(\.title), ["c"])
+        let after = try XCTUnwrap(store.lists().first)
+        XCTAssertEqual(after.boardIDs, [ids[2]])
+        XCTAssertEqual(after.revision, saved.revision + 1)
+        try store.deleteBoards(["unknown-1", "unknown-2"])
+        XCTAssertEqual(try store.list().map(\.title), ["c"])
+        XCTAssertEqual(try store.lists().first?.revision, saved.revision + 1)
+        let reopened = try BoardStore(directory: dir)
+        XCTAssertEqual(try reopened.list().map(\.title), ["c"])
+        XCTAssertEqual(try reopened.lists().first?.boardIDs, [ids[2]])
+    }
     func testBoardTitleDraftDistinguishesNoEditFromRealConflict() {
         XCTAssertEqual(BoardTitleDraft.decision(baseline: "Alpha", draft: "Alpha", current: "Beta"), .unchanged)
         XCTAssertEqual(BoardTitleDraft.decision(baseline: "Alpha", draft: "My edit", current: "Beta"), .conflict)

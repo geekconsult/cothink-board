@@ -455,6 +455,7 @@ public enum BoardError: LocalizedError {
         }
     }
 }
+public enum BoardAnchor { case before(String), after(String), top, bottom }
 private struct Entry: Codable {
     var board: Board
     var past: [Board] = []
@@ -555,6 +556,37 @@ public final class BoardStore {
         }
     }
     public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i); if var lists = db.lists { for index in lists.indices where lists[index].boardIDs.contains(id) { lists[index].boardIDs.removeAll { $0 == id }; lists[index].revision += 1 }; db.lists = lists } } }
+    public func move(boardID: String, to anchor: BoardAnchor) throws {
+        try transact(write: true) { db in
+            guard let from = db.entries.firstIndex(where: { $0.board.id == boardID }) else { throw BoardError.notFound }
+            let entry = db.entries.remove(at: from)
+            let to: Int
+            switch anchor {
+            case .top: to = 0
+            case .bottom: to = db.entries.count
+            case .before(let sibling):
+                if sibling == boardID { to = from }
+                else { to = db.entries.firstIndex(where: { $0.board.id == sibling }) ?? db.entries.count }
+            case .after(let sibling):
+                if sibling == boardID { to = from }
+                else { to = db.entries.firstIndex(where: { $0.board.id == sibling }).map { $0 + 1 } ?? db.entries.count }
+            }
+            db.entries.insert(entry, at: to)
+        }
+    }
+    public func deleteBoards(_ ids: [String]) throws {
+        try transact(write: true) { db in
+            let doomed = Set(ids)
+            db.entries.removeAll { doomed.contains($0.board.id) }
+            if var lists = db.lists {
+                for index in lists.indices where lists[index].boardIDs.contains(where: { doomed.contains($0) }) {
+                    lists[index].boardIDs.removeAll { doomed.contains($0) }
+                    lists[index].revision += 1
+                }
+                db.lists = lists
+            }
+        }
+    }
     public func undo(_ id: String, actor: String, expectedRevision: Int? = nil) throws -> Board { try travel(id, actor: actor, backwards: true, expectedRevision: expectedRevision) }
     public func redo(_ id: String, actor: String, expectedRevision: Int? = nil) throws -> Board { try travel(id, actor: actor, backwards: false, expectedRevision: expectedRevision) }
     private func travel(_ id: String, actor: String, backwards: Bool, expectedRevision: Int?) throws -> Board {
