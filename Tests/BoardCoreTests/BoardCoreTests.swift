@@ -711,6 +711,46 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertTrue(board.hiddenNoteIDs().isEmpty)
     }
 
+    func testLineFlippedDecodesLegacyJSONAsNil() throws {
+        let json = """
+        {"id":"n1","text":"Note","x":10,"y":20,"width":200,"height":100,"color":"#FFFFFF"}
+        """
+        let note = try JSONDecoder().decode(Note.self, from: Data(json.utf8))
+        XCTAssertNil(note.lineFlipped)
+        var line = Note(id: "l", x: 0, y: 0, width: 160, height: 0, color: "#F3F1EC", shape: .line)
+        line.lineFlipped = true
+        let decoded = try JSONDecoder().decode(Note.self, from: JSONEncoder().encode(line))
+        XCTAssertEqual(decoded.lineFlipped, true)
+    }
+
+    func testShapeFactoryTakesFrameAndFlip() {
+        let line = Note.makeShape(.line, x: 5, y: 6, width: 100, height: 0, flipped: true)
+        XCTAssertEqual(line.x, 5); XCTAssertEqual(line.y, 6)
+        XCTAssertEqual(line.width, 100); XCTAssertEqual(line.height, 0)
+        XCTAssertEqual(line.lineFlipped, true)
+        let rect = Note.makeShape(.rectangle, x: 1, y: 2, width: 70, height: 40, flipped: true)
+        XCTAssertEqual(rect.x, 1); XCTAssertEqual(rect.y, 2)
+        XCTAssertEqual(rect.width, 70); XCTAssertEqual(rect.height, 40)
+        XCTAssertNil(rect.lineFlipped)
+        let defaultLine = Note.makeShape(.line, x: 0, y: 0)
+        XCTAssertEqual(defaultLine.width, 160); XCTAssertEqual(defaultLine.height, 80)
+        XCTAssertEqual(defaultLine.lineFlipped, false)
+    }
+
+    func testSvgLineRespectsFlippedDiagonal() {
+        func lineBoard(flipped: Bool) -> Board {
+            var board = Board(notes: [Note(id: "l", x: 10, y: 20, width: 100, height: 0, color: "#F3F1EC", shape: .line)])
+            board.notes[0].lineFlipped = flipped
+            return board
+        }
+        let unflipped = BoardPDFHTML.svg(board: lineBoard(flipped: false), images: [:])
+        XCTAssertTrue(unflipped.contains("x1=\"10.00\""))
+        XCTAssertTrue(unflipped.contains("x2=\"110.00\""))
+        let flipped = BoardPDFHTML.svg(board: lineBoard(flipped: true), images: [:])
+        XCTAssertTrue(flipped.contains("x1=\"110.00\""))
+        XCTAssertTrue(flipped.contains("x2=\"10.00\""))
+    }
+
     func testSVGOverviewHidesFoldedSubtree() {
         func family(folded: Bool) -> Board {
             var board = Board(notes: [

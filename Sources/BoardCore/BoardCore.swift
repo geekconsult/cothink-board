@@ -64,6 +64,7 @@ public struct Note: Codable, Identifiable, Equatable {
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
     public var shape: NoteShape?
+    public var lineFlipped: Bool?
     public var imagePath: String?
     public var assetIDs: [String]?
     public var parentID: String?
@@ -77,8 +78,10 @@ public struct Note: Codable, Identifiable, Equatable {
         self.shape = shape
     }
 
-    public static func makeShape(_ shape: NoteShape, x: Double, y: Double) -> Note {
-        Note(text: "", x: x, y: y, width: 160, height: shape == .line ? 80 : 120, color: "#F3F1EC", shape: shape)
+    public static func makeShape(_ shape: NoteShape, x: Double, y: Double, width: Double? = nil, height: Double? = nil, flipped: Bool = false) -> Note {
+        var note = Note(text: "", x: x, y: y, width: width ?? 160, height: height ?? (shape == .line ? 80 : 120), color: "#F3F1EC", shape: shape)
+        note.lineFlipped = shape == .line ? flipped : nil
+        return note
     }
 
     public var autofitsHeight: Bool { shape == nil }
@@ -88,7 +91,6 @@ public struct Note: Codable, Identifiable, Equatable {
         shape == .line ? width > 0 || height > 0 : width > 0 && height > 0
     }
 
-    // Interactive edits clamp to 1 (not 0) for lines so the result always passes hasValidExtent.
     public var extentMinWidth: Double { shape == .line ? 1 : 80 }
     public var extentMinHeight: Double { shape == .line ? 1 : 50 }
 }
