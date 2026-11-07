@@ -191,7 +191,8 @@ public enum BoardPDFHTML {
             let card: String
             switch n.shape {
             case .line:
-                card = "<line x1=\"\(number(n.x))\" y1=\"\(number(n.y))\" x2=\"\(number(n.x+n.width))\" y2=\"\(number(n.y+n.height))\" stroke=\"\(stroke)\"\(strokeAttrs)/>"
+                let leftX = n.x, rightX = n.x + n.width
+                card = "<line x1=\"\(number(n.lineFlipped == true ? rightX : leftX))\" y1=\"\(number(n.y))\" x2=\"\(number(n.lineFlipped == true ? leftX : rightX))\" y2=\"\(number(n.y+n.height))\" stroke=\"\(stroke)\"\(strokeAttrs)/>"
             case .ellipse:
                 card = "<ellipse cx=\"\(number(n.x+n.width/2))\" cy=\"\(number(n.y+n.height/2))\" rx=\"\(number(n.width/2))\" ry=\"\(number(n.height/2))\" fill=\"\(fill)\" stroke=\"\(stroke)\"\(strokeAttrs)/>"
             case .diamond:

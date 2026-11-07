@@ -275,8 +275,8 @@ final class BoardViewModel: ObservableObject {
         appendNote(Note(id: UUID().uuidString, text: "", x: x, y: y, width: 190, height: 100, color: "#FFF1AF"), opensEditor: true)
     }
 
-    func addShape(_ shape: NoteShape) {
-        appendNote(Note.makeShape(shape, x: 500, y: 300), opensEditor: false)
+    func addShape(_ shape: NoteShape, frame: BoardRect, flipped: Bool) {
+        appendNote(Note.makeShape(shape, x: frame.x, y: frame.y, width: frame.width, height: frame.height, flipped: flipped), opensEditor: false)
     }
 
     private func appendNote(_ note: Note, opensEditor: Bool) {
@@ -677,6 +677,9 @@ struct WorkspaceView: View {
     @State private var resizeState: ResizeState?
     @State private var selectionStart: CGPoint?
     @State private var selectionEnd: CGPoint?
+    @State private var shapeTool: NoteShape?
+    @State private var shapeDraft: CGRect?
+    @State private var shapeDraftFlipped = false
     @State private var connectionDrag: ConnectionDrag?
     @State private var routePointDrag: RoutePointDrag?
     @State private var drawingGroup = false
@@ -747,6 +750,8 @@ struct WorkspaceView: View {
         .onChange(of: model.board?.id) { _, id in
             sidebarSelection = id.map { [$0] } ?? []
             sidebarSelectionAnchor = id
+            shapeTool = nil
+            shapeDraft = nil
         }
         .onChange(of: model.pendingInlineEditID) { _, id in
             guard let id, let note = model.board?.notes.first(where: { $0.id == id }) else { return }
@@ -764,7 +769,7 @@ struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in zoom = 1.0 }
         .onExitCommand {
             if showingHome { showingHome = false }
-            else { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false }
+            else { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false; shapeTool = nil; shapeDraft = nil }
         }
         .alert("Unable to complete action", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -1157,6 +1162,8 @@ struct WorkspaceView: View {
                     Text("Select another note to connect").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if drawingGroup {
                     Text("Drag on the canvas to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else if let tool = shapeTool {
+                    Text("Drag on the canvas to draw a \(tool.rawValue) · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if let start = selectionStart, let end = selectionEnd, let board {
                     let hidden = board.hiddenNoteIDs()
                     let marqueeCount = board.notes.filter { !hidden.contains($0.id) && BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
@@ -1169,10 +1176,10 @@ struct WorkspaceView: View {
 
             Button("Note", systemImage: "plus.square") { model.addNote() }.modifier(GlassControl()).help("Add a note (⌘N)").disabled(board == nil)
             Menu {
-                Button("Rectangle") { model.addShape(.rectangle) }
-                Button("Ellipse") { model.addShape(.ellipse) }
-                Button("Diamond") { model.addShape(.diamond) }
-                Button("Line") { model.addShape(.line) }
+                Button("Rectangle") { shapeTool = .rectangle }
+                Button("Ellipse") { shapeTool = .ellipse }
+                Button("Diamond") { shapeTool = .diamond }
+                Button("Line") { shapeTool = .line }
             } label: { Label("Shape", systemImage: "square.on.circle") }
                 .modifier(GlassControl()).help("Add a diagram shape").disabled(board == nil)
             Button(drawingGroup ? "Cancel group" : "Group", systemImage: "square.dashed") { requestGroup() }
@@ -1264,7 +1271,11 @@ struct WorkspaceView: View {
                             switch result {
                             case .first(let tap):
                                 finishInlineEditing()
-                                model.addNote(x: max(0, tap.location.x - 95), y: max(0, tap.location.y - 50))
+                                if let tool = shapeTool {
+                                    model.addShape(tool, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: tool == .line ? 80 : 120), flipped: false)
+                                } else {
+                                    model.addNote(x: max(0, tap.location.x - 95), y: max(0, tap.location.y - 50))
+                                }
                                 canvasFocused = true
                             case .second:
                                 finishInlineEditing()
@@ -1277,6 +1288,19 @@ struct WorkspaceView: View {
                         })
                     .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("boardCanvas"))
                         .onChanged { value in
+                            if shapeTool != nil {
+                                if shapeDraft == nil {
+                                    finishInlineEditing()
+                                    NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                                    guard !model.draftBlocked else { return }
+                                }
+                                let start = value.startLocation
+                                let dx = value.location.x - start.x, dy = value.location.y - start.y
+                                shapeDraft = CGRect(x: min(start.x, value.location.x), y: min(start.y, value.location.y),
+                                                    width: abs(dx), height: abs(dy))
+                                shapeDraftFlipped = (dx > 0) != (dy > 0)
+                                return
+                            }
                             if selectionStart == nil {
                                 finishInlineEditing()
                                 NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -1285,6 +1309,26 @@ struct WorkspaceView: View {
                             }
                             selectionEnd = value.location
                         }.onEnded { value in
+                            if let tool = shapeTool {
+                                defer { shapeDraft = nil }
+                                guard shapeDraft != nil, !model.draftBlocked else { return }
+                                let dx = value.location.x - value.startLocation.x
+                                let dy = value.location.y - value.startLocation.y
+                                let frame: BoardRect
+                                let flipped: Bool
+                                if abs(dx) < 8, abs(dy) < 8 {
+                                    frame = BoardRect(x: value.startLocation.x, y: value.startLocation.y, width: 160, height: tool == .line ? 80 : 120)
+                                    flipped = false
+                                } else {
+                                    frame = BoardRect(x: min(value.startLocation.x, value.location.x),
+                                                      y: min(value.startLocation.y, value.location.y),
+                                                      width: tool == .line ? abs(dx) : max(1, abs(dx)),
+                                                      height: tool == .line ? abs(dy) : max(1, abs(dy)))
+                                    flipped = tool == .line && (dx > 0) != (dy > 0)
+                                }
+                                model.addShape(tool, frame: frame, flipped: flipped)
+                                return
+                            }
                             defer { selectionStart = nil; selectionEnd = nil }
                             guard let start = selectionStart, !model.draftBlocked else { return }
                             let rect = BoardRect.selection(fromX: start.x, fromY: start.y, toX: value.location.x, toY: value.location.y)
@@ -1329,6 +1373,19 @@ struct WorkspaceView: View {
                         .overlay(Rectangle().stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1, dash: [5, 3])))
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.x + rect.width / 2, y: rect.y + rect.height / 2)
+                        .allowsHitTesting(false)
+                }
+                if let tool = shapeTool, let draft = shapeDraft {
+                    let preview: AnyShape = switch tool {
+                    case .rectangle: AnyShape(RoundedRectangle(cornerRadius: 6))
+                    case .ellipse: AnyShape(Ellipse())
+                    case .diamond: AnyShape(Diamond())
+                    case .line: AnyShape(DiagonalLine(flipped: shapeDraftFlipped))
+                    }
+                    preview
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                        .frame(width: draft.width, height: draft.height)
+                        .position(x: draft.midX, y: draft.midY)
                         .allowsHitTesting(false)
                 }
                 if let drag = connectionDrag, let source = board.notes.first(where: { $0.id == drag.source }) {
@@ -1845,10 +1902,16 @@ struct Diamond: Shape {
 }
 
 struct DiagonalLine: Shape {
+    var flipped: Bool = false
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        if flipped {
+            path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        } else {
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
         return path
     }
 }
@@ -1869,7 +1932,7 @@ struct NoteTile: View {
     var body: some View {
         Group {
             if note.shape == .line {
-                DiagonalLine().stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
+                DiagonalLine(flipped: note.lineFlipped == true).stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
             } else {
             VStack(alignment: note.shape == nil ? .leading : .center, spacing: 6) {
                 if isEditing {
