@@ -276,7 +276,7 @@ final class BoardViewModel: ObservableObject {
     }
 
     func addShape(_ shape: NoteShape, frame: BoardRect, flipped: Bool) {
-        appendNote(Note.makeShape(shape, x: frame.x, y: frame.y, width: frame.width, height: frame.height, flipped: flipped), opensEditor: false)
+        appendNote(Note.makeShape(shape, x: frame.x, y: frame.y, width: frame.width, height: frame.height, flipped: flipped), opensEditor: shape == .text)
     }
 
     private func appendNote(_ note: Note, opensEditor: Bool) {
@@ -1272,7 +1272,7 @@ struct WorkspaceView: View {
                             case .first(let tap):
                                 finishInlineEditing()
                                 if let tool = shapeTool {
-                                    model.addShape(tool, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: tool == .line ? 80 : 120), flipped: false)
+                                    model.addShape(tool, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: tool == .line ? 80 : tool == .text ? 40 : 120), flipped: false)
                                 } else {
                                     model.addNote(x: max(0, tap.location.x - 95), y: max(0, tap.location.y - 50))
                                 }
@@ -1318,7 +1318,7 @@ struct WorkspaceView: View {
                                 let frame: BoardRect
                                 let flipped: Bool
                                 if abs(dx) < 8, abs(dy) < 8 {
-                                    frame = BoardRect(x: value.startLocation.x, y: value.startLocation.y, width: 160, height: tool == .line ? 80 : 120)
+                                    frame = BoardRect(x: value.startLocation.x, y: value.startLocation.y, width: 160, height: tool == .line ? 80 : tool == .text ? 40 : 120)
                                     flipped = false
                                 } else {
                                     frame = BoardRect(x: min(value.startLocation.x, value.location.x),
@@ -1378,7 +1378,7 @@ struct WorkspaceView: View {
                 }
                 if let tool = shapeTool, let draft = shapeDraft {
                     let preview: AnyShape = switch tool {
-                    case .rectangle: AnyShape(RoundedRectangle(cornerRadius: 6))
+                    case .rectangle, .text: AnyShape(RoundedRectangle(cornerRadius: 6))
                     case .ellipse: AnyShape(Ellipse())
                     case .diamond: AnyShape(Diamond())
                     case .line: AnyShape(DiagonalLine(flipped: shapeDraftFlipped))
@@ -1514,16 +1514,18 @@ struct WorkspaceView: View {
         if let state = resizeState, state.id == note.id {
             let rect = state.preview
             result.x = rect.x; result.y = rect.y; result.width = rect.width; result.height = rect.height
-        } else if draggingSelection, let board = model.board {
-            let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height)
-            if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
-        } else if draggingID == note.id {
-            result.x = max(0, note.x + dragTranslation.width)
-            result.y = max(0, note.y + dragTranslation.height)
-        } else if let groupID = draggingID, let group = model.board?.groups.first(where: { $0.id == groupID }), group.memberIDs?.contains(note.id) == true {
-            if let delta = model.board?.groupMovement(id: group.id, dx: dragTranslation.width, dy: dragTranslation.height) {
-                result.x = note.x + delta.dx
-                result.y = note.y + delta.dy
+        } else if let board = model.board {
+            if draggingSelection {
+                let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height)
+                if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
+            } else if let draggedID = draggingID, board.notes.contains(where: { $0.id == draggedID }) {
+                let delta = board.selectionMovement(noteIDs: [draggedID], dx: dragTranslation.width, dy: dragTranslation.height)
+                if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
+            } else if let groupID = draggingID, let group = board.groups.first(where: { $0.id == groupID }), group.memberIDs?.contains(note.id) == true {
+                if let delta = board.groupMovement(id: group.id, dx: dragTranslation.width, dy: dragTranslation.height) {
+                    result.x = note.x + delta.dx
+                    result.y = note.y + delta.dy
+                }
             }
         }
         return result
@@ -1663,16 +1665,13 @@ struct WorkspaceView: View {
                 }
                 dragTranslation = value.translation
             }.onEnded { value in
-                guard let draggedID = draggingID else { return }
+                guard draggingID != nil else { return }
                 let wasSelection = draggingSelection
                 draggingID = nil; draggingSelection = false; dragTranslation = .zero
                 model.mutate { board in
                     let dx = value.translation.width, dy = value.translation.height
                     if wasSelection { board.moveSelection(noteIDs: model.selectedNoteIDs, dx: dx, dy: dy); return }
-                    if draggedID != note.id { _ = board.moveGroup(id: draggedID, dx: dx, dy: dy); return }
-                    guard let index = board.notes.firstIndex(where: { $0.id == note.id }) else { return }
-                    board.notes[index].x = max(0, note.x + dx)
-                    board.notes[index].y = max(0, note.y + dy)
+                    board.moveSelection(noteIDs: [note.id], dx: dx, dy: dy)
                 }
             })
             .contextMenu {
@@ -1933,9 +1932,12 @@ struct NoteTile: View {
     var body: some View {
         Group {
             if note.shape == .line {
-                DiagonalLine(flipped: note.lineFlipped == true).stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
+                DiagonalLine(flipped: note.lineFlipped == true)
+                    .stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
+                    .contentShape(DiagonalLine(flipped: note.lineFlipped == true).stroke(lineWidth: 14))
+                    .overlay(selectionRing)
             } else {
-            VStack(alignment: note.shape == nil ? .leading : .center, spacing: 6) {
+            VStack(alignment: note.shape == nil || note.shape == .text ? .leading : .center, spacing: 6) {
                 if isEditing {
                     TextEditor(text: $text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
@@ -1950,6 +1952,10 @@ struct NoteTile: View {
                     Text(note.text.isEmpty ? "Empty note" : note.text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
                         .foregroundStyle(Color.readableText(on: note.color).opacity(note.text.isEmpty ? 0.66 : 1))
+                } else if note.shape == .text {
+                    Text(note.text.isEmpty ? "Empty text" : note.text)
+                        .font(.system(size: note.fontSize ?? 15, weight: .medium))
+                        .foregroundStyle(.primary.opacity(note.text.isEmpty ? 0.35 : 1))
                 } else if !note.text.isEmpty {
                     Text(note.text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
@@ -1990,12 +1996,21 @@ struct NoteTile: View {
                         .help("Open \(asset.name)")
                     }
                 }
-                if note.shape == nil { Spacer(minLength: 0) }
+                if note.shape == nil || note.shape == .text { Spacer(minLength: 0) }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: note.shape == nil ? .topLeading : .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: note.shape == nil || note.shape == .text ? .topLeading : .center)
             .padding(isEditing ? 8 : 16)
-            .background(Color(hex: note.color), in: tileShape)
-            .overlay(tileShape.stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle))
+            .contentShape(note.shape == .text ? AnyShape(Rectangle()) : tileShape)
+            .background {
+                if note.shape != .text {
+                    tileShape.fill(Color(hex: note.color))
+                }
+            }
+            .overlay {
+                if note.shape != .text {
+                    tileShape.stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
+                }
+            }
             .overlay(selectionRing)
             }
         }
@@ -2041,10 +2056,13 @@ struct NoteTile: View {
     }
 
     @ViewBuilder private var selectionRing: some View {
-        if note.shape == nil {
-            RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)
-        } else {
+        switch note.shape {
+        case .line, .text:
+            RoundedRectangle(cornerRadius: 4).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)
+        case .rectangle, .ellipse, .diamond:
             tileShape.stroke(selected ? Color.accentColor : .clear, lineWidth: 2)
+        case nil:
+            RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)
         }
     }
 

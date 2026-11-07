@@ -32,7 +32,7 @@ You drive boards through the CoThink tools. Every board change runs the same **r
 - `import_board` — an exported board JSON in as a new board; the store assigns identity.
 
 **Editing**
-- `edit_board` — ordered ops, one undoable change. Add ops carry the full item with an `id` you mint. Beyond the basics: connections take `label`, `direction` (oneWay | twoWay | none), `route` (straight | curved | custom), and `routePoints` (≤ 100; curved uses the first, custom uses all as bends); notes, groups, and connections take `fontSize` 6–96 plus `strokeColor` / `strokeWidth` / `strokeStyle`; notes may carry `parentID`, a tree parent note id (null clears it), and `shape` (rectangle | ellipse | diamond | line; null = text note); groups may carry `memberIDs`.
+- `edit_board` — ordered ops, one undoable change. Add ops carry the full item with an `id` you mint. Beyond the basics: connections take `label`, `direction` (oneWay | twoWay | none), `route` (straight | curved | custom), and `routePoints` (≤ 100; curved uses the first, custom uses all as bends); notes, groups, and connections take `fontSize` 6–96 plus `strokeColor` / `strokeWidth` / `strokeStyle`; notes may carry `parentID`, a tree parent note id (null clears it), and `shape` (rectangle | ellipse | diamond | line | text; null = text note); groups may carry `memberIDs`.
 - `replace_board` — atomic whole-board swap.
 - `lock_note` / `unlock_note` — membership moves; locking transfers from the previous group and keeps position; locked groups travel together.
 
