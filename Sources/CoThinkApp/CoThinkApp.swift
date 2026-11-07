@@ -272,15 +272,22 @@ final class BoardViewModel: ObservableObject {
     }
 
     func addNote(x: Double = 500, y: Double = 300) {
+        appendNote(Note(id: UUID().uuidString, text: "", x: x, y: y, width: 190, height: 100, color: "#FFF1AF"), opensEditor: true)
+    }
+
+    func addShape(_ shape: NoteShape) {
+        appendNote(Note.makeShape(shape, x: 500, y: 300), opensEditor: false)
+    }
+
+    private func appendNote(_ note: Note, opensEditor: Bool) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked else { return }
-        let id = UUID().uuidString
-        mutate { $0.notes.append(Note(id: id, text: "", x: x, y: y, width: 190, height: 100, color: "#FFF1AF")) }
-        selectedNoteID = id
+        mutate { $0.notes.append(note) }
+        selectedNoteID = note.id
         selectedNoteIDs = []
         selectedGroupID = nil
         selectedConnectionID = nil
-        pendingInlineEditID = id
+        if opensEditor { pendingInlineEditID = note.id }
     }
 
     func addAdjacentNote(toRight: Bool) {
@@ -1161,6 +1168,13 @@ struct WorkspaceView: View {
             .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
 
             Button("Note", systemImage: "plus.square") { model.addNote() }.modifier(GlassControl()).help("Add a note (⌘N)").disabled(board == nil)
+            Menu {
+                Button("Rectangle") { model.addShape(.rectangle) }
+                Button("Ellipse") { model.addShape(.ellipse) }
+                Button("Diamond") { model.addShape(.diamond) }
+                Button("Line") { model.addShape(.line) }
+            } label: { Label("Shape", systemImage: "square.on.circle") }
+                .modifier(GlassControl()).help("Add a diagram shape").disabled(board == nil)
             Button(drawingGroup ? "Cancel group" : "Group", systemImage: "square.dashed") { requestGroup() }
                 .modifier(GlassControl()).help("Group selected notes or draw a group (⇧⌘G)").disabled(board == nil)
             Button("Connect", systemImage: "arrow.up.right") {
@@ -1325,7 +1339,8 @@ struct WorkspaceView: View {
                     }.frame(width: extent.width, height: extent.height).allowsHitTesting(false)
                 }
                 if let note = board.notes.first(where: { $0.id == model.selectedNoteID }) {
-                    resizeHandles(id: note.id, rect: BoardRect(x: note.x, y: note.y, width: note.width, height: note.height), isNote: true)
+                    resizeHandles(id: note.id, rect: BoardRect(x: note.x, y: note.y, width: note.width, height: note.height), isNote: true,
+                                  minWidth: note.extentMinWidth, minHeight: note.extentMinHeight)
                     connectionHandle(note, board: board)
                 } else if let group = board.groups.first(where: { $0.id == model.selectedGroupID }) {
                     resizeHandles(id: group.id, rect: BoardRect(x: group.x, y: group.y, width: group.width, height: group.height), isNote: false)
@@ -1479,7 +1494,7 @@ struct WorkspaceView: View {
                 })
     }
 
-    func resizeHandles(id: String, rect: BoardRect, isNote: Bool) -> some View {
+    func resizeHandles(id: String, rect: BoardRect, isNote: Bool, minWidth: Double = 80, minHeight: Double = 50) -> some View {
         let shown = resizeState?.id == id ? resizeState!.preview : rect
         return ForEach(ResizeCorner.allCases, id: \.self) { corner in
             let left = corner == .topLeft || corner == .bottomLeft
@@ -1495,7 +1510,7 @@ struct WorkspaceView: View {
                     if resizeState == nil {
                         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
                         guard !model.draftBlocked else { return }
-                        resizeState = ResizeState(id: id, origin: rect, corner: corner, translation: .zero)
+                        resizeState = ResizeState(id: id, origin: rect, corner: corner, translation: .zero, minWidth: minWidth, minHeight: minHeight)
                     }
                     guard resizeState?.id == id else { return }
                     resizeState?.translation = CGSize(width: value.translation.width / zoom, height: value.translation.height / zoom)
@@ -1579,7 +1594,7 @@ struct WorkspaceView: View {
                 if clickedAnotherObject { showInspector = false }
             }
             .simultaneousGesture(TapGesture(count: 2).onEnded {
-                beginInlineEditing(note)
+                if note.shape == .line { model.chooseNote(note.id) } else { beginInlineEditing(note) }
             })
             .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("boardCanvas")).onChanged { value in
                 if draggingID == nil { finishInlineEditing(); NotificationCenter.default.post(name: .flushBoardDraft, object: nil) }
@@ -1704,7 +1719,7 @@ struct WorkspaceView: View {
             }
         } else {
             guard let note = board.notes.first(where: { $0.id == id }), note.text != value else { return }
-            let fittedHeight = NoteContentSizing.height(for: value, fontSize: note.fontSize ?? 15, width: note.width)
+            let fittedHeight = note.autofitsHeight ? NoteContentSizing.height(for: value, fontSize: note.fontSize ?? 15, width: note.width) : note.height
             model.mutate { current in
                 guard let index = current.notes.firstIndex(where: { $0.id == id }) else { return }
                 current.notes[index].text = value
@@ -1770,7 +1785,9 @@ struct ResizeState {
     let origin: BoardRect
     let corner: ResizeCorner
     var translation: CGSize
-    var preview: BoardRect { origin.resized(from: corner, dx: translation.width, dy: translation.height) }
+    var minWidth: Double = 80
+    var minHeight: Double = 50
+    var preview: BoardRect { origin.resized(from: corner, dx: translation.width, dy: translation.height, minWidth: minWidth, minHeight: minHeight) }
 }
 
 extension LineStyle {
@@ -1815,6 +1832,27 @@ struct GroupTile: View {
     }
 }
 
+struct Diamond: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct DiagonalLine: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        return path
+    }
+}
+
 struct NoteTile: View {
     let note: Note
     let selected: Bool
@@ -1830,7 +1868,10 @@ struct NoteTile: View {
 
     var body: some View {
         Group {
-            VStack(alignment: .leading, spacing: 6) {
+            if note.shape == .line {
+                DiagonalLine().stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
+            } else {
+            VStack(alignment: note.shape == nil ? .leading : .center, spacing: 6) {
                 if isEditing {
                     TextEditor(text: $text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
@@ -1841,10 +1882,15 @@ struct NoteTile: View {
                         .onChange(of: textFocused) { _, focused in if !focused { onFinishEditing() } }
                         .onAppear { DispatchQueue.main.async { textFocused = true } }
                         .onExitCommand(perform: onFinishEditing)
-                } else {
+                } else if note.shape == nil {
                     Text(note.text.isEmpty ? "Empty note" : note.text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
                         .foregroundStyle(Color.readableText(on: note.color).opacity(note.text.isEmpty ? 0.66 : 1))
+                } else if !note.text.isEmpty {
+                    Text(note.text)
+                        .font(.system(size: note.fontSize ?? 15, weight: .medium))
+                        .foregroundStyle(Color.readableText(on: note.color))
+                        .multilineTextAlignment(.center)
                 }
                 if let imagePath, let image = NSImage(contentsOfFile: imagePath) {
                     Image(nsImage: image)
@@ -1880,14 +1926,15 @@ struct NoteTile: View {
                         .help("Open \(asset.name)")
                     }
                 }
-                Spacer(minLength: 0)
+                if note.shape == nil { Spacer(minLength: 0) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: note.shape == nil ? .topLeading : .center)
+            .padding(isEditing ? 8 : 16)
+            .background(Color(hex: note.color), in: tileShape)
+            .overlay(tileShape.stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle))
+            .overlay(selectionRing)
             }
         }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(isEditing ? 8 : 16)
-            .background(Color(hex: note.color), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: StrokeStyle(lineWidth: note.strokeWidth ?? 1, lineCap: .round, dash: (note.strokeStyle ?? .solid).dashPattern)))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2))
             .overlay(alignment: .topLeading) {
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
@@ -1914,6 +1961,27 @@ struct NoteTile: View {
                 }
             }
             .shadow(color: selected ? Color.accentColor.opacity(0.55) : .black.opacity(0.07), radius: selected ? 7 : 5, y: selected ? 0 : 2)
+    }
+
+    private var tileShape: AnyShape {
+        switch note.shape {
+        case .rectangle: AnyShape(RoundedRectangle(cornerRadius: 6))
+        case .ellipse: AnyShape(Ellipse())
+        case .diamond: AnyShape(Diamond())
+        default: AnyShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private var tileBorderStyle: StrokeStyle {
+        StrokeStyle(lineWidth: note.strokeWidth ?? 1, lineCap: .round, dash: (note.strokeStyle ?? .solid).dashPattern)
+    }
+
+    @ViewBuilder private var selectionRing: some View {
+        if note.shape == nil {
+            RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)
+        } else {
+            tileShape.stroke(selected ? Color.accentColor : .clear, lineWidth: 2)
+        }
     }
 
     private func assetSymbol(_ name: String) -> String {

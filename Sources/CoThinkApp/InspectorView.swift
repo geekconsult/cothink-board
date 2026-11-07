@@ -16,6 +16,7 @@ private struct InspectorDraftSnapshot: Equatable {
     var route: ConnectionRoute
     var fontSize: Double
     var label: String
+    var shape: NoteShape?
     var x: Double
     var y: Double
     var width: Double
@@ -38,6 +39,7 @@ struct InspectorView: View {
     @State private var route: ConnectionRoute = .straight
     @State private var fontSize = 15.0
     @State private var label = ""
+    @State private var shape: NoteShape?
     @State private var text = ""
     @State private var imagePath = ""
     @State private var assetIDs: [String] = []
@@ -58,7 +60,7 @@ struct InspectorView: View {
     private var draftSnapshot: InspectorDraftSnapshot {
         InspectorDraftSnapshot(text: text, imagePath: imagePath, assetIDs: assetIDs, title: title, color: color,
                                strokeColor: strokeColor, strokeWidth: strokeWidth, strokeStyle: strokeStyle,
-                               direction: direction, route: route, fontSize: fontSize, label: label, x: x, y: y, width: width, height: height)
+                               direction: direction, route: route, fontSize: fontSize, label: label, shape: shape, x: x, y: y, width: width, height: height)
     }
 
     var body: some View {
@@ -179,10 +181,23 @@ struct InspectorView: View {
                     .help("Choose a group to move together with this note")
             }
             geometryFields
+            shapeControl
             fontSizeControl
             colors
             strokeControls
         }
+    }
+
+    private var shapeControl: some View {
+        Menu {
+            Button("None") { shape = nil }
+            ForEach(NoteShape.allCases, id: \.self) { option in
+                Button(option.rawValue.capitalized) { shape = option }
+            }
+        } label: {
+            Label("Shape: \(shape?.rawValue.capitalized ?? "None")", systemImage: "square.on.circle")
+        }
+        .menuStyle(.borderlessButton)
     }
 
     @ViewBuilder
@@ -288,8 +303,9 @@ struct InspectorView: View {
             multiColors
             multiFontSizeControl
             multiStrokeControls
-            Button("Fit heights to content") {
+                Button("Fit heights to content") {
                 applyToSelectedNotes { note in
+                    guard note.autofitsHeight else { return }
                     note.height = NoteContentSizing.height(for: note.text, fontSize: note.fontSize ?? 15, width: note.width)
                 }
             }
@@ -509,7 +525,7 @@ struct InspectorView: View {
     }
 
     private var hasDraft: Bool {
-        if let b = baselineNote { return fontSize != (b.fontSize ?? 15) || text != b.text || imagePath != (b.imagePath ?? "") || assetIDs != (b.assetIDs ?? []) || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
+        if let b = baselineNote { return fontSize != (b.fontSize ?? 15) || text != b.text || imagePath != (b.imagePath ?? "") || assetIDs != (b.assetIDs ?? []) || color != b.color || x != b.x || y != b.y || max(b.extentMinWidth, width) != b.width || max(b.extentMinHeight, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) || shape != b.shape }
         if let b = baselineGroup { return fontSize != (b.fontSize ?? 11) || text != b.title || color != b.color || x != b.x || y != b.y || max(80, width) != b.width || max(50, height) != b.height || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle, defaultStyle: .dashed) }
         if let b = baselineConnection { return fontSize != (b.fontSize ?? 11) || direction != b.effectiveDirection || route != b.effectiveRoute || label != (b.label ?? "") || strokeChanged(b.strokeColor, b.strokeWidth, b.strokeStyle) }
         return title != baselineTitle
@@ -534,7 +550,7 @@ struct InspectorView: View {
         guard hasDraft else { saveStatus = "Saved"; return }
         if let baseline = baselineNote {
             guard let latest = current.notes.first(where: { $0.id == baseline.id }) else { blockDraft("The note was deleted elsewhere."); return }
-            let changed = fontSize != (baseline.fontSize ?? 15) || text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(80, width) != baseline.width || max(50, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle)
+            let changed = fontSize != (baseline.fontSize ?? 15) || text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(baseline.extentMinWidth, width) != baseline.width || max(baseline.extentMinHeight, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle) || shape != baseline.shape
             guard changed else { saveStatus = "Saved"; return }
             guard latest == baseline else { blockDraft("The note changed elsewhere."); return }
             if model.mutate({ board in
@@ -546,11 +562,12 @@ struct InspectorView: View {
                 board.notes[i].fontSize = fontSize
                 board.notes[i].imagePath = imagePath.isEmpty ? nil : imagePath
                 board.notes[i].assetIDs = assetIDs
-                board.notes[i].width = max(80, width)
-                if text != baseline.text || max(80, width) != baseline.width {
-                    board.notes[i].height = NoteContentSizing.height(for: text, fontSize: fontSize, width: max(80, width))
+                board.notes[i].shape = shape
+                board.notes[i].width = max(board.notes[i].extentMinWidth, width)
+                if board.notes[i].autofitsHeight, text != baseline.text || max(baseline.extentMinWidth, width) != baseline.width {
+                    board.notes[i].height = NoteContentSizing.height(for: text, fontSize: fontSize, width: max(baseline.extentMinWidth, width))
                 } else {
-                    board.notes[i].height = max(50, height)
+                    board.notes[i].height = max(board.notes[i].extentMinHeight, height)
                 }
                 board.notes[i].color = color
                 board.notes[i].strokeColor = strokeColor; board.notes[i].strokeWidth = strokeWidth; board.notes[i].strokeStyle = strokeStyle
@@ -621,6 +638,7 @@ struct InspectorView: View {
         if let note {
             fontSize = note.fontSize ?? 15
             text = note.text; imagePath = note.imagePath ?? ""; assetIDs = note.assetIDs ?? []; color = note.color; x = note.x; y = note.y; width = note.width; height = note.height
+            shape = note.shape
             strokeColor = note.strokeColor ?? "#6F7785"; strokeWidth = note.strokeWidth ?? 1; strokeStyle = note.strokeStyle ?? .solid
         } else if let group {
             fontSize = group.fontSize ?? 11
