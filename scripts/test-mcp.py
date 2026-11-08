@@ -146,6 +146,27 @@ assert fb['revision']==5
 _,fd=call(250,'get_board_context',{'board_id':tidyboard['id']})
 rn=[n for n in fd['notes'] if n['id']=='r'][0]
 assert rn['collapsed'] is False,rn
+shapes=[t for t in req(290,'tools/list')['tools'] if t['name']=='edit_board'][0]
+assert 'lineFlipped' in shapes['description'] and 'text' in shapes['description'],shapes['description']
+_,sh=call(300,'create_board',{'title':'Shapes'})
+_,sh=call(301,'edit_board',{'board_id':sh['id'],'expected_revision':0,'operations':[{'action':'add','collection':'notes','item':{'id':'ln','text':'','x':0,'y':0,'width':120,'height':0,'color':'#F3F1EC','shape':'line'}},{'action':'add','collection':'notes','item':{'id':'ln2','text':'','x':200,'y':0,'width':120,'height':0,'color':'#F3F1EC','shape':'line','lineFlipped':True}}]})
+assert sh['revision']==1 and [n for n in sh['notes'] if n['id']=='ln'][0]['shape']=='line' and [n for n in sh['notes'] if n['id']=='ln2'][0]['lineFlipped'] is True,sh
+_,shc=call(302,'get_board_context',{'board_id':sh['id']})
+ln=[n for n in shc['notes'] if n['id']=='ln'][0]; ln2=[n for n in shc['notes'] if n['id']=='ln2'][0]
+assert ln['shape']=='line' and 'lineFlipped' not in ln,ln
+assert ln2['shape']=='line' and ln2['lineFlipped'] is True,ln2
+_,sh=call(303,'edit_board',{'board_id':sh['id'],'expected_revision':1,'operations':[{'action':'add','collection':'notes','item':{'id':'rc','text':'','x':400,'y':0,'width':120,'height':60,'color':'#F3F1EC','shape':'rectangle'}},{'action':'add','collection':'connections','item':{'id':'e','from':'ln','to':'ln2','arrow':True}},{'action':'add','collection':'groups','item':{'id':'g','title':'G','x':0,'y':0,'width':600,'height':200,'color':'#ffffff'}}]})
+assert sh['revision']==2 and [n for n in sh['notes'] if n['id']=='rc'][0]['shape']=='rectangle',sh
+r,e=call(304,'edit_board',{'board_id':sh['id'],'expected_revision':2,'operations':[{'action':'update','collection':'notes','id':'ln','fields':{'shape':'box'}}]});assert r['isError'] and 'diamond' in e and sh['revision']==2,(e,sh['revision'])
+r,e=call(305,'edit_board',{'board_id':sh['id'],'expected_revision':2,'operations':[{'action':'add','collection':'notes','item':{'id':'x1','text':'','x':0,'y':0,'width':10,'height':10,'color':'#fff','shape':'circle'}}]});assert r['isError'] and 'rectangle' in e,(e)
+r,e=call(306,'edit_board',{'board_id':sh['id'],'expected_revision':2,'operations':[{'action':'update','collection':'notes','id':'ln','fields':{'lineFlipped':'yes'}}]});assert r['isError'] and 'lineFlipped' in e,e
+r,e=call(307,'edit_board',{'board_id':sh['id'],'expected_revision':2,'operations':[{'action':'update','collection':'connections','id':'e','fields':{'shape':'rectangle'}}]});assert r['isError'] and 'notes' in e,e
+r,e=call(308,'edit_board',{'board_id':sh['id'],'expected_revision':2,'operations':[{'action':'add','collection':'notes','item':{'id':'x2','text':'','x':0,'y':0,'width':80,'height':0,'color':'#fff'}}]});assert r['isError'],e
+_,sh=call(309,'edit_board',{'board_id':sh['id'],'expected_revision':2,'operations':[{'action':'update','collection':'notes','id':'ln2','fields':{'lineFlipped':None}}]})
+assert sh['revision']==3 and [n for n in sh['notes'] if n['id']=='ln2'][0].get('lineFlipped') is None,sh
+_,shc=call(310,'get_board_context',{'board_id':sh['id']})
+assert [n for n in shc['notes'] if n['id']=='ln2'][0].get('lineFlipped') is None,shc
+r,e=call(311,'edit_board',{'board_id':sh['id'],'expected_revision':3,'operations':[{'action':'update','collection':'groups','id':'g','fields':{'shape':'rectangle'}}]});assert r['isError'] and 'notes' in e,e
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
@@ -162,4 +183,4 @@ _,b=call(11,'get_board',{'board_id':b['id']});assert len(b['notes'])==1
 capture,meta=call(151,'capture_board',{'board_id':b['id']});assert not capture.get('isError') and meta['revision']==b['revision'] and capture['content'][1]['type']=='image'
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0
 temporary_home.cleanup()
-print('PASS initialize, list, create, atomic edit, conflicts, cascade, undo, redo, delete, history, import, replace, readonly, persistence, mindmap tree')
+print('PASS initialize, list, create, atomic edit, conflicts, cascade, undo, redo, delete, history, import, replace, readonly, persistence, mindmap tree, shapes')
