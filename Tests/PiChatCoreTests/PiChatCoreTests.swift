@@ -263,6 +263,9 @@ done
         XCTAssertTrue(prompt.contains("export_board_pdf"))
         XCTAssertTrue(prompt.contains("Never guess an id"))
         XCTAssertTrue(prompt.contains("Revision scopes"))
+        XCTAssertTrue(prompt.contains("lineFlipped"), "The prompt must teach the line diagonal-direction field.")
+        XCTAssertTrue(prompt.contains("rectangle | ellipse | diamond | line | text"), "The prompt must list the shape enum.")
+        XCTAssertTrue(prompt.contains("shapes are notes"), "The prompt must teach that shapes are notes with a shape field, not a separate entity.")
         XCTAssertFalse(prompt.contains("cloud"), "The in-app Pi only has the local server; the prompt must not teach cloud tools.")
     }
 

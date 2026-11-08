@@ -32,7 +32,7 @@ You drive boards through the CoThink tools. Every board change runs the same **r
 - `import_board` — an exported board JSON in as a new board; the store assigns identity.
 
 **Editing**
-- `edit_board` — ordered ops, one undoable change. Add ops carry the full item with an `id` you mint. Beyond the basics: connections take `label`, `direction` (oneWay | twoWay | none), `route` (straight | curved | custom), and `routePoints` (≤ 100; curved uses the first, custom uses all as bends); notes, groups, and connections take `fontSize` 6–96 plus `strokeColor` / `strokeWidth` / `strokeStyle`; notes may carry `parentID`, a tree parent note id (null clears it), and `shape` (rectangle | ellipse | diamond | line | text; null = text note); groups may carry `memberIDs`.
+- `edit_board` — ordered ops, one undoable change. Add ops carry the full item with an `id` you mint. Beyond the basics: connections take `label`, `direction` (oneWay | twoWay | none), `route` (straight | curved | custom), and `routePoints` (≤ 100; curved uses the first, custom uses all as bends); notes, groups, and connections take `fontSize` 6–96 plus `strokeColor` / `strokeWidth` / `strokeStyle`; notes may carry `parentID`, a tree parent note id (null clears it), `shape` (rectangle | ellipse | diamond | line | text; null = text note) and `lineFlipped` (line only; true = the top-right→bottom-left diagonal, absent = top-left→bottom-right); shapes are notes, so connections, groups, and undo work on them; groups may carry `memberIDs`.
 - `replace_board` — atomic whole-board swap.
 - `lock_note` / `unlock_note` — membership moves; locking transfers from the previous group and keeps position; locked groups travel together.
 
@@ -40,7 +40,7 @@ You drive boards through the CoThink tools. Every board change runs the same **r
 - `add_child_note` — grow the tree; the server mints the id and places the child right of its parent, stacked under existing children. Prefer it over `edit_board` for tree growth.
 - `set_note_parent` — attach, reparent, or detach (`parent_id: null`); refuses self-parents and cycles.
 - `tidy_tree_layout` — right-growing mindmap layout; `root_id` tidies one subtree, omit it for every tree. The root never moves; unlinked notes never move.
-- Reading a tree: `get_board_context` shows `parent_note_id`, `child_note_ids`, and `collapsed` per note; verify tree shape there. A folded note hides its subtree from the canvas and from `capture_board`/PDF overviews (folded cards carry a `+N` marker) while `get_board_context` still lists every note; fold or unfold through `edit_board` note ops with `collapsed` (true/null).
+- Reading a tree: `get_board_context` shows `parent_note_id`, `child_note_ids`, `collapsed`, plus `shape` (and `lineFlipped` when true) per note; verify tree shape there. A folded note hides its subtree from the canvas and from `capture_board`/PDF overviews (folded cards carry a `+N` marker) while `get_board_context` still lists every note; fold or unfold through `edit_board` note ops with `collapsed` (true/null).
 - Deleting a note promotes its children to the nearest surviving ancestor. Groups and tree links are independent: a note can be a group member and a tree child at once.
 
 **Appearance**
