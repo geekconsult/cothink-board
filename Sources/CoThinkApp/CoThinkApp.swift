@@ -290,10 +290,10 @@ final class BoardViewModel: ObservableObject {
         if opensEditor { pendingInlineEditID = note.id }
     }
 
-    func addAdjacentNote(toRight: Bool) {
+    func addAdjacentNote(toRight: Bool, of sourceID: String? = nil) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
-        guard !draftBlocked, let sourceID = selectedNoteID,
-              let source = board?.notes.first(where: { $0.id == sourceID }) else { return }
+        guard !draftBlocked, let anchorID = sourceID ?? selectedNoteID,
+              let source = board?.notes.first(where: { $0.id == anchorID }) else { return }
         let note = Note(text: "", x: toRight ? source.x + source.width + 70 : source.x,
                         y: toRight ? source.y : source.y + source.height + 70,
                         width: 190, height: 100, color: "#FFF1AF")
@@ -304,6 +304,14 @@ final class BoardViewModel: ObservableObject {
             selectedNoteID = note.id; selectedNoteIDs = []; selectedGroupID = nil; selectedConnectionID = nil; connectingFrom = nil
             pendingInlineEditID = note.id
         }
+    }
+
+    /// The Tab key's creation routing — the single table shared by the canvas shortcut
+    /// and the inline editor: shift → a tree child of the anchor; plain Tab → a child
+    /// when the anchor is already tree-linked, otherwise a plain connected note to its right.
+    func addViaTab(from noteID: String, shift: Bool) {
+        if shift || board?.isTreeLinked(noteID: noteID) == true { addChild(of: noteID) }
+        else { addAdjacentNote(toRight: true, of: noteID) }
     }
 
     func addChild(of sourceID: String) {
@@ -1421,16 +1429,24 @@ struct WorkspaceView: View {
         .focused($canvasFocused)
         .focusEffectDisabled()
         .background(CanvasShortcutMonitor { event in
-            guard canvasAcceptsShortcuts else { return false }
             let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            // While the inline note editor is open, Tab/⇧Tab commit the edit and create the
+            // next note with the same routing as the selection shortcut. This branch must run
+            // before canvasAcceptsShortcuts, which excludes the editing state on purpose.
+            if event.keyCode == 48, modifiers == .shift || modifiers.isEmpty,
+               let editingID = editingObjectID, !editingGroupTitle {
+                finishInlineEditing()
+                model.addViaTab(from: editingID, shift: modifiers == .shift)
+                return true
+            }
+            guard canvasAcceptsShortcuts else { return false }
             if modifiers == .shift, event.keyCode == 48, let selected = model.selectedNoteID {
-                model.addChild(of: selected)
+                model.addViaTab(from: selected, shift: true)
                 return true
             }
             if modifiers.isEmpty, let selected = model.selectedNoteID {
                 if event.keyCode == 48 {
-                    if model.board?.isTreeLinked(noteID: selected) == true { model.addChild(of: selected) }
-                    else { model.addAdjacentNote(toRight: true) }
+                    model.addViaTab(from: selected, shift: false)
                     return true
                 }
                 if event.keyCode == 36 || event.keyCode == 76 {
