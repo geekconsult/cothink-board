@@ -1439,6 +1439,16 @@ struct WorkspaceView: View {
                 model.addViaTab(from: editingID, shift: modifiers == .shift)
                 return true
             }
+            // ⇧Enter while editing a CHILD note creates its sibling (the Return shortcut's
+            // tree action). Child-only on purpose: plain Enter stays a newline everywhere,
+            // and root notes keep ⇧Enter as a newline too.
+            if event.keyCode == 36 || event.keyCode == 76, modifiers == .shift,
+               let editingID = editingObjectID, !editingGroupTitle,
+               model.board?.notes.first(where: { $0.id == editingID })?.parentID != nil {
+                finishInlineEditing()
+                model.addSiblingNote(to: editingID)
+                return true
+            }
             guard canvasAcceptsShortcuts else { return false }
             if modifiers == .shift, event.keyCode == 48, let selected = model.selectedNoteID {
                 model.addViaTab(from: selected, shift: true)

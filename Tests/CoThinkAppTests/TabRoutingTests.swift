@@ -63,4 +63,22 @@ final class TabRoutingTests: XCTestCase {
         XCTAssertEqual(created.x, anchor.x + anchor.width + 60, accuracy: 0.001)
         XCTAssertEqual(model.pendingInlineEditID, created.id)
     }
+
+    @MainActor
+    func testSiblingCreationKeepsParentAndStacksBelow() throws {
+        let model = try freshModel()
+        let parent = try seedNote(model)
+        let child = try seedNote(model, x: 400, y: 100)
+        _ = model.mutate { board in
+            if let i = board.notes.firstIndex(where: { $0.id == child.id }) { board.notes[i].parentID = parent.id }
+        }
+        model.selectedNoteID = child.id
+        model.addSiblingNote(to: child.id)
+        let board = try XCTUnwrap(model.board)
+        let sibling = try XCTUnwrap(board.notes.last)
+        XCTAssertEqual(sibling.parentID, parent.id, "a sibling stays under the same parent")
+        XCTAssertEqual(sibling.x, child.x, accuracy: 0.001)
+        XCTAssertEqual(sibling.y, child.y + child.height + 24, accuracy: 0.001)
+        XCTAssertEqual(model.pendingInlineEditID, sibling.id, "the sibling opens straight into editing")
+    }
 }
