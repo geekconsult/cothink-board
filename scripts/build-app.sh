@@ -25,8 +25,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>CoThink Board</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.5</string>
-<key>CFBundleVersion</key><string>1.5</string>
+<key>CFBundleShortVersionString</key><string>1.6</string>
+<key>CFBundleVersion</key><string>1.6</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>CoThink Board uses the microphone to dictate your message into the chat input.</string>
