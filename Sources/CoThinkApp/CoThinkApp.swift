@@ -149,17 +149,13 @@ final class BoardViewModel: ObservableObject {
 
     func refresh() throws {
         guard let store else { return }
-        boards = try store.list()
-        boardLists = try store.lists()
-        if let current = board {
-            if boards.contains(where: { $0.id == current.id }) {
-                let updated = try store.get(current.id)
-                if updated.revision != current.revision { board = updated }
-                history = try store.history(current.id)
-            } else {
-                board = nil
-                clearSelection()
-            }
+        let snapshot = try store.pollSnapshot(currentBoardID: board?.id)
+        if snapshot.boards != boards { boards = snapshot.boards }
+        if snapshot.lists != boardLists { boardLists = snapshot.lists }
+        if snapshot.history != history { history = snapshot.history }
+        if snapshot.board?.revision != board?.revision {
+            board = snapshot.board
+            if snapshot.board == nil { clearSelection() }
         }
     }
 
