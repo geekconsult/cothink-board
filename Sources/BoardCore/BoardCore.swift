@@ -502,10 +502,20 @@ public struct BoardList: Codable, Identifiable, Equatable {
     public init(title: String) { self.title = title }
 }
 private struct Database: Codable { var entries: [Entry] = []; var lists: [BoardList]? = nil }
+public struct PollSnapshot: Equatable {
+    public var boards: [Board]
+    public var lists: [BoardList]
+    public var board: Board?
+    public var history: [Change]
+}
 
 public final class BoardStore {
     private let directory: URL
     private var dataURL: URL { directory.appendingPathComponent("boards.json") }
+    private struct CachedDatabase {
+        let modified: Date, size: Int, database: Database
+    }
+    private var cachedDatabase: CachedDatabase?
     public init(directory: URL? = nil) throws {
         if let directory { self.directory = directory }
         else if let path = ProcessInfo.processInfo.environment["COTHINK_HOME"], !path.isEmpty { self.directory = URL(fileURLWithPath: path, isDirectory: true) }
@@ -520,13 +530,29 @@ public final class BoardStore {
         guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { flock(fd, LOCK_UN); close(fd) }
         guard flock(fd, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        let stat: (modified: Date, size: Int)? = {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: dataURL.path)
+            guard let modified = attributes?[.modificationDate] as? Date else { return nil }
+            return (modified, attributes?[.size] as? Int ?? 0)
+        }()
         var db: Database
-        if FileManager.default.fileExists(atPath: dataURL.path) { db = try JSONDecoder().decode(Database.self, from: Data(contentsOf: dataURL)) }
-        else { db = Database() }
+        if let stat, let cached = cachedDatabase, cached.modified == stat.modified, cached.size == stat.size {
+            db = cached.database
+        } else if let stat {
+            db = try JSONDecoder().decode(Database.self, from: Data(contentsOf: dataURL))
+            cachedDatabase = CachedDatabase(modified: stat.modified, size: stat.size, database: db)
+        } else {
+            db = Database()
+            cachedDatabase = nil
+        }
         let result = try block(&db)
         if write {
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             try encoder.encode(db).write(to: dataURL, options: .atomic)
+            let written = try? FileManager.default.attributesOfItem(atPath: dataURL.path)
+            if let modified = written?[.modificationDate] as? Date {
+                cachedDatabase = CachedDatabase(modified: modified, size: written?[.size] as? Int ?? 0, database: db)
+            }
         }
         return result
     }
@@ -555,6 +581,12 @@ public final class BoardStore {
     }
     public func get(_ id: String) throws -> Board { try transact { db in guard let e = db.entries.first(where: { $0.board.id == id }) else { throw BoardError.notFound }; return e.board } }
     public func history(_ id: String) throws -> [Change] { try transact { db in guard let e = db.entries.first(where: { $0.board.id == id }) else { throw BoardError.notFound }; return e.history } }
+    public func pollSnapshot(currentBoardID: String?) throws -> PollSnapshot {
+        try transact { db in
+            let current = db.entries.first(where: { $0.board.id == currentBoardID })
+            return PollSnapshot(boards: db.entries.map(\.board), lists: db.lists ?? [], board: current?.board, history: current?.history ?? [])
+        }
+    }
     public func create(title: String, actor: String) throws -> Board {
         let board = Board(title: title)
         try validate(board)

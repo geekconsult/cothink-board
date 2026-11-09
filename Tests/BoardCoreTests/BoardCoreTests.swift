@@ -404,6 +404,59 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertGreaterThan(redone.revision, undone.revision)
         XCTAssertEqual(try s.history(b.id).map(\.actor), ["user", "agent", "user", "user"])
     }
+    func testCachedStoreSeesWritesFromAnotherInstance() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let a = try BoardStore(directory: dir)
+        let b = try BoardStore(directory: dir)
+        let created = try a.create(title: "First", actor: "user")
+        XCTAssertEqual(try a.list().map(\.title), ["First"])
+        XCTAssertEqual(try a.get(created.id).title, "First")
+        var board = created
+        board.title = "Renamed elsewhere"
+        _ = try b.replace(board, expectedRevision: 0, actor: "agent")
+        XCTAssertEqual(try a.get(created.id).title, "Renamed elsewhere")
+        XCTAssertEqual(try a.list().map(\.title), ["Renamed elsewhere"])
+        try b.delete(created.id, expectedRevision: 1)
+        XCTAssertThrowsError(try a.get(created.id))
+        XCTAssertEqual(try a.list(), [])
+        XCTAssertEqual(try a.lists(), [])
+    }
+    func testPollSnapshotMatchesComposingTheIndividualReads() throws {
+        let s = try store()
+        let first = try s.create(title: "Alpha", actor: "user")
+        let second = try s.create(title: "Beta", actor: "agent")
+        var list = try s.createList(title: "Research")
+        list.boardIDs = [first.id, second.id]
+        _ = try s.replaceList(list, expectedRevision: 0)
+        var board = try s.get(first.id)
+        board.notes = [Note(id: "n1", text: "One")]
+        let saved = try s.replace(board, expectedRevision: 0, actor: "agent")
+        let snapshot = try s.pollSnapshot(currentBoardID: first.id)
+        XCTAssertEqual(snapshot.boards, try s.list())
+        XCTAssertEqual(snapshot.lists, try s.lists())
+        XCTAssertEqual(snapshot.board, try s.get(first.id))
+        XCTAssertEqual(snapshot.board?.revision, saved.revision)
+        XCTAssertEqual(snapshot.history, try s.history(first.id))
+        XCTAssertEqual(snapshot.history.map(\.actor), ["user", "agent"])
+        XCTAssertEqual(snapshot.lists.first?.boardIDs, [first.id, second.id])
+        let again = try s.pollSnapshot(currentBoardID: first.id)
+        XCTAssertEqual(again, snapshot)
+    }
+    func testPollSnapshotWithMissingBoardYieldsNilBoardButPopulatedRest() throws {
+        let s = try store()
+        let created = try s.create(title: "Alpha", actor: "user")
+        _ = try s.createList(title: "Research")
+        let missing = try s.pollSnapshot(currentBoardID: "ghost")
+        XCTAssertNil(missing.board)
+        XCTAssertEqual(missing.history, [])
+        XCTAssertEqual(missing.boards.map(\.id), [created.id])
+        XCTAssertEqual(missing.lists.map(\.title), ["Research"])
+        let none = try s.pollSnapshot(currentBoardID: nil)
+        XCTAssertNil(none.board)
+        XCTAssertEqual(none.history, [])
+        XCTAssertEqual(none.boards.map(\.id), [created.id])
+        XCTAssertEqual(none.lists.map(\.title), ["Research"])
+    }
     func testRejectInvalidConnectionsAndImportCopiesBoard() throws {
         let s = try store()
         var b = try s.create(title: "Ideas", actor: "user")
