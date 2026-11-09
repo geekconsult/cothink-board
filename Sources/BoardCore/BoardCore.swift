@@ -456,11 +456,10 @@ public extension Board {
     }
 }
 
-// One-pass lookup index for a board body evaluation: noteByID replaces
-// notes.first(where:) scans and childCountByID replaces children(of:).count.
+// One-pass lookup index for a board body evaluation.
 public struct BoardIndexes {
-    public private(set) var noteByID: [String: Note]
-    public private(set) var childCountByID: [String: Int]
+    private var noteByID: [String: Note]
+    private var childCountByID: [String: Int]
     public init(board: Board) {
         var noteByID: [String: Note] = [:]
         var childCountByID: [String: Int] = [:]

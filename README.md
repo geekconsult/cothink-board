@@ -251,8 +251,8 @@ By default, the app stores its database and history in `~/Library/Application Su
 | Actual size | ⌘0 |
 | Delete selected object while canvas has focus | Delete |
 | Delete selected object from the menu | ⇧⌘Delete |
-| Undo / redo | ⌘Z / ⇧⌘Z or ⌘Y |
-| Switch between the select tool and the note tool | V / N |
+| Undo / redo | ⌘Z / ⇧⌘Z, or ⌘Y while the canvas has focus |
+| Switch between the select tool and the note tool | V / N while the canvas has focus |
 | Show or hide boards | ⌥⌘1 |
 | Show or hide inspector | ⌥⌘2 |
 | Export board | ⇧⌘E |

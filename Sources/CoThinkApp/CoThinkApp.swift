@@ -42,14 +42,13 @@ enum CanvasTool: Equatable {
     case note, select, shape(NoteShape)
 }
 
-/// The one drag-movement resolution per canvas body evaluation: which note and
-/// group IDs shift by how much. Resolved once for the frame and passed down, so
-/// note tiles never recompute selectionMovement themselves.
+/// Resolved once per canvas frame and passed down, so note tiles never
+/// recompute selectionMovement themselves.
 struct CanvasDragMovement {
-    var noteIDs: Set<String> = []
-    var groupIDs: Set<String> = []
-    var dx: Double = 0
-    var dy: Double = 0
+    var noteIDs: Set<String>
+    var groupIDs: Set<String>
+    var dx: Double
+    var dy: Double
 }
 
 @main
@@ -1184,25 +1183,10 @@ struct WorkspaceView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(board?.title ?? "CoThink Board").font(.headline).lineLimit(1)
-                if tool != .note {
-                    let status: String = switch tool {
-                    case .select: "Select · drag to select notes · Esc to cancel"
-                    case .shape(let kind): "Creating: \(kind.rawValue) · drag or click to place · Esc to cancel"
-                    case .note: ""
-                    }
-                    HStack(spacing: 6) {
-                        Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Button {
-                            tool = .note
-                            shapeDraft = nil
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Back to the note tool (N)")
-                        .accessibilityLabel("Cancel the active tool")
-                    }
+                if case .select = tool {
+                    toolStatusRow("Select · drag to select notes · Esc to cancel")
+                } else if case .shape(let kind) = tool {
+                    toolStatusRow("Creating: \(kind.rawValue) · drag or click to place · Esc to cancel")
                 } else if model.connectingFrom != nil {
                     Text("Select another note to connect").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if drawingGroup {
@@ -1288,6 +1272,23 @@ struct WorkspaceView: View {
         .padding(.vertical, 12)
         .background(.thinMaterial)
         .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 1) }
+    }
+
+    @ViewBuilder
+    private func toolStatusRow(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Button {
+                tool = .note
+                shapeDraft = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Back to the note tool (N)")
+            .accessibilityLabel("Cancel the active tool")
+        }
     }
 
     @ViewBuilder

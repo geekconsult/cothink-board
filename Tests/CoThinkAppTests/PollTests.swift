@@ -13,7 +13,7 @@ final class PollTests: XCTestCase {
         let subscription = model.objectWillChange.sink { _ in emissions += 1 }
         for _ in 0..<5 { model.poll() }
         XCTAssertEqual(emissions, 0, "an idle poll must not republish boards, lists, history or the board")
-        _ = subscription
+        subscription.cancel()
     }
 
     @MainActor
@@ -33,6 +33,6 @@ final class PollTests: XCTestCase {
         XCTAssertEqual(model.boards.first(where: { $0.id == current.id })?.title, "Renamed elsewhere")
         model.poll()
         XCTAssertEqual(model.board?.title, "Renamed elsewhere", "a settled poll keeps the external change")
-        _ = subscription
+        subscription.cancel()
     }
 }
