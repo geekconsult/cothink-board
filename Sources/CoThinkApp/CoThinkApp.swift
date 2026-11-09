@@ -36,6 +36,12 @@ private struct CanvasShortcutMonitor: NSViewRepresentable {
     }
 }
 
+/// The armed canvas tool. `.note` is the default: every other case trades the
+/// empty-canvas click away from creating notes.
+enum CanvasTool: Equatable {
+    case note, select, shape(NoteShape)
+}
+
 /// The one drag-movement resolution per canvas body evaluation: which note and
 /// group IDs shift by how much. Resolved once for the frame and passed down, so
 /// note tiles never recompute selectionMovement themselves.
@@ -691,7 +697,7 @@ struct WorkspaceView: View {
     @State private var resizeState: ResizeState?
     @State private var selectionStart: CGPoint?
     @State private var selectionEnd: CGPoint?
-    @State private var shapeTool: NoteShape?
+    @State private var tool: CanvasTool = .note
     @State private var shapeDraft: CGRect?
     @State private var shapeDraftFlipped = false
     @State private var connectionDrag: ConnectionDrag?
@@ -764,7 +770,7 @@ struct WorkspaceView: View {
         .onChange(of: model.board?.id) { _, id in
             sidebarSelection = id.map { [$0] } ?? []
             sidebarSelectionAnchor = id
-            shapeTool = nil
+            tool = .note
             shapeDraft = nil
         }
         .onChange(of: model.pendingInlineEditID) { _, id in
@@ -783,7 +789,7 @@ struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in zoom = 1.0 }
         .onExitCommand {
             if showingHome { showingHome = false }
-            else { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false; shapeTool = nil; shapeDraft = nil }
+            else { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false; tool = .note; shapeDraft = nil }
         }
         .alert("Unable to complete action", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -1172,12 +1178,29 @@ struct WorkspaceView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(board?.title ?? "CoThink Board").font(.headline).lineLimit(1)
-                if model.connectingFrom != nil {
+                if tool != .note {
+                    let status: String = switch tool {
+                    case .select: "Select · drag to select notes · Esc to cancel"
+                    case .shape(let kind): "Creating: \(kind.rawValue) · drag or click to place · Esc to cancel"
+                    case .note: ""
+                    }
+                    HStack(spacing: 6) {
+                        Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Button {
+                            tool = .note
+                            shapeDraft = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Back to the note tool (N)")
+                        .accessibilityLabel("Cancel the active tool")
+                    }
+                } else if model.connectingFrom != nil {
                     Text("Select another note to connect").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if drawingGroup {
                     Text("Drag on the canvas to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                } else if let tool = shapeTool {
-                    Text("Drag on the canvas to draw a \(tool.rawValue) · ⌘-drag to select · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if let start = selectionStart, let end = selectionEnd, let board {
                     let hidden = board.hiddenNoteIDs()
                     let marqueeCount = board.notes.filter { !hidden.contains($0.id) && BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
@@ -1188,12 +1211,17 @@ struct WorkspaceView: View {
             }
             .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
 
+            Button(tool == .select ? "Selecting" : "Select", systemImage: "cursorarrow") {
+                tool = tool == .select ? .note : .select
+            }
+            .modifier(GlassControl()).help("Select mode: click and drag without creating notes (V); click again for the note tool (N)").disabled(board == nil)
+            .accessibilityLabel(tool == .select ? "Switch to the note tool" : "Switch to the select tool")
             Button("Note", systemImage: "plus.square") { model.addNote() }.modifier(GlassControl()).help("Add a note (⌘N)").disabled(board == nil)
             Menu {
-                Button("Rectangle") { shapeTool = .rectangle }
-                Button("Ellipse") { shapeTool = .ellipse }
-                Button("Diamond") { shapeTool = .diamond }
-                Button("Line") { shapeTool = .line }
+                Button("Rectangle") { tool = .shape(.rectangle) }
+                Button("Ellipse") { tool = .shape(.ellipse) }
+                Button("Diamond") { tool = .shape(.diamond) }
+                Button("Line") { tool = .shape(.line) }
             } label: { Label("Shape", systemImage: "square.on.circle") }
                 .modifier(GlassControl()).help("Add a diagram shape").disabled(board == nil)
             Button(drawingGroup ? "Cancel group" : "Group", systemImage: "square.dashed") { requestGroup() }
@@ -1287,9 +1315,12 @@ struct WorkspaceView: View {
                             switch result {
                             case .first(let tap):
                                 finishInlineEditing()
-                                if let tool = shapeTool {
-                                    model.addShape(tool, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: tool == .line ? 80 : tool == .text ? 40 : 120), flipped: false)
-                                } else {
+                                switch tool {
+                                case .select:
+                                    model.clearSelection()
+                                case .shape(let kind):
+                                    model.addShape(kind, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: kind == .line ? 80 : kind == .text ? 40 : 120), flipped: false)
+                                case .note:
                                     model.addNote(x: max(0, tap.location.x - 95), y: max(0, tap.location.y - 50))
                                 }
                                 canvasFocused = true
@@ -1305,7 +1336,7 @@ struct WorkspaceView: View {
                     .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("boardCanvas"))
                         .onChanged { value in
                             // While a shape tool is armed, ⌘-drag still marquees.
-                            if shapeTool != nil, selectionStart == nil, shapeDraft != nil || !NSEvent.modifierFlags.contains(.command) {
+                            if case .shape = tool, selectionStart == nil, shapeDraft != nil || !NSEvent.modifierFlags.contains(.command) {
                                 if shapeDraft == nil {
                                     finishInlineEditing()
                                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -1326,7 +1357,7 @@ struct WorkspaceView: View {
                             }
                             selectionEnd = value.location
                         }.onEnded { value in
-                            if let tool = shapeTool, shapeDraft != nil {
+                            if case .shape(let kind) = tool, shapeDraft != nil {
                                 defer { shapeDraft = nil }
                                 guard !model.draftBlocked else { return }
                                 let dx = value.location.x - value.startLocation.x
@@ -1334,16 +1365,16 @@ struct WorkspaceView: View {
                                 let frame: BoardRect
                                 let flipped: Bool
                                 if abs(dx) < 8, abs(dy) < 8 {
-                                    frame = BoardRect(x: value.startLocation.x, y: value.startLocation.y, width: 160, height: tool == .line ? 80 : tool == .text ? 40 : 120)
+                                    frame = BoardRect(x: value.startLocation.x, y: value.startLocation.y, width: 160, height: kind == .line ? 80 : kind == .text ? 40 : 120)
                                     flipped = false
                                 } else {
                                     frame = BoardRect(x: min(value.startLocation.x, value.location.x),
                                                       y: min(value.startLocation.y, value.location.y),
-                                                      width: tool == .line ? abs(dx) : max(1, abs(dx)),
-                                                      height: tool == .line ? abs(dy) : max(1, abs(dy)))
-                                    flipped = tool == .line && (dx > 0) != (dy > 0)
+                                                      width: kind == .line ? abs(dx) : max(1, abs(dx)),
+                                                      height: kind == .line ? abs(dy) : max(1, abs(dy)))
+                                    flipped = kind == .line && (dx > 0) != (dy > 0)
                                 }
-                                model.addShape(tool, frame: frame, flipped: flipped)
+                                model.addShape(kind, frame: frame, flipped: flipped)
                                 return
                             }
                             defer { selectionStart = nil; selectionEnd = nil }
@@ -1392,7 +1423,7 @@ struct WorkspaceView: View {
                         .position(x: rect.x + rect.width / 2, y: rect.y + rect.height / 2)
                         .allowsHitTesting(false)
                 }
-                if let tool = shapeTool, let draft = shapeDraft {
+                if case .shape(let tool) = tool, let draft = shapeDraft {
                     let preview: AnyShape = switch tool {
                     case .rectangle, .text: AnyShape(RoundedRectangle(cornerRadius: 6))
                     case .ellipse: AnyShape(Ellipse())
@@ -1460,6 +1491,16 @@ struct WorkspaceView: View {
             guard canvasAcceptsShortcuts else { return false }
             if modifiers == .shift, event.keyCode == 48, let selected = model.selectedNoteID {
                 model.addViaTab(from: selected, shift: true)
+                return true
+            }
+            if modifiers.isEmpty, event.charactersIgnoringModifiers?.lowercased() == "v" {
+                tool = .select
+                shapeDraft = nil
+                return true
+            }
+            if modifiers.isEmpty, event.charactersIgnoringModifiers?.lowercased() == "n" {
+                tool = .note
+                shapeDraft = nil
                 return true
             }
             if modifiers.isEmpty, let selected = model.selectedNoteID {
