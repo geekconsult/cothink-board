@@ -115,6 +115,7 @@ The left and right toolbar buttons show or hide the boards sidebar and inspector
 
 ### Select, group, and lock notes
 
+- Choose **Select** in the toolbar (or press V) to arm the select tool: clicking empty canvas no longer creates a note, and dragging still draws a selection rectangle. Click the button again (or press N, or the ✕ beside the toolbar hint) to return to the note tool.
 - Drag across an empty area to select notes; this does not create a group by itself. Choose **Group** to group the selection, or choose **Group** first and draw its bounds. Notes whose centers are inside a newly drawn group become locked members.
 - Dragging a group or one of its locked notes moves the group and its members together.
 - In a note's inspector choose **Unlock from group** to move it independently. Choose **Lock to group** to lock that individual note to a group again, keeping its current position. A note can be locked to one group at a time.
@@ -250,11 +251,12 @@ By default, the app stores its database and history in `~/Library/Application Su
 | Actual size | ⌘0 |
 | Delete selected object while canvas has focus | Delete |
 | Delete selected object from the menu | ⇧⌘Delete |
-| Undo / redo | ⌘Z / ⇧⌘Z |
+| Undo / redo | ⌘Z / ⇧⌘Z or ⌘Y |
+| Switch between the select tool and the note tool | V / N |
 | Show or hide boards | ⌥⌘1 |
 | Show or hide inspector | ⌥⌘2 |
 | Export board | ⇧⌘E |
-| Cancel connection | Escape |
+| Cancel connection or the active tool | Escape |
 
 Select several notes with Shift-click or by dragging a selection on the canvas before copying. Copying a group includes its locked notes; connections between copied notes are preserved. Pasting into another board copies linked project files into that board's project folder. An image attached by an external path continues to reference that path.
 
