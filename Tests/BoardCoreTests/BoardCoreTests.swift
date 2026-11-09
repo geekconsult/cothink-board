@@ -457,6 +457,32 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertEqual(none.boards.map(\.id), [created.id])
         XCTAssertEqual(none.lists.map(\.title), ["Research"])
     }
+    func testIndexesMatchLinearLookupsForEveryID() {
+        var parent = Note(id: "p", text: "Parent", x: 0, y: 0)
+        parent.collapsed = true
+        var child = Note(id: "c", text: "Child", x: 300, y: 0)
+        child.parentID = "p"
+        var grandchild = Note(id: "g", text: "Grandchild", x: 600, y: 0)
+        grandchild.parentID = "c"
+        let loose = Note(id: "l", text: "Loose", x: 0, y: 400)
+        var board = Board(notes: [parent, child, grandchild, loose], connections: [Connection(id: "e", from: "p", to: "l")])
+        var group = BoardGroup(id: "grp", x: 0, y: 0)
+        group.memberIDs = ["p", "l"]
+        board.groups = [group]
+        let indexes = BoardIndexes(board: board)
+        for note in board.notes {
+            XCTAssertEqual(indexes.note(note.id), board.notes.first(where: { $0.id == note.id }), "note(\(note.id)) must match the linear scan")
+            XCTAssertEqual(indexes.childCount(note.id), board.children(of: note.id).count, "childCount(\(note.id)) must match children(of:)")
+        }
+        XCTAssertEqual(indexes.note("p")?.text, "Parent")
+        XCTAssertEqual(indexes.childCount("p"), 1)
+        XCTAssertEqual(indexes.childCount("c"), 1)
+        XCTAssertEqual(indexes.childCount("g"), 0)
+        XCTAssertEqual(indexes.childCount("l"), 0)
+        XCTAssertEqual(indexes.childCount("missing"), 0)
+        XCTAssertNil(indexes.note("missing"))
+        XCTAssertNil(indexes.note(nil))
+    }
     func testRejectInvalidConnectionsAndImportCopiesBoard() throws {
         let s = try store()
         var b = try s.create(title: "Ideas", actor: "user")

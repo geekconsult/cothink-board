@@ -456,6 +456,25 @@ public extension Board {
     }
 }
 
+// One-pass lookup index for a board body evaluation: noteByID replaces
+// notes.first(where:) scans and childCountByID replaces children(of:).count.
+public struct BoardIndexes {
+    public private(set) var noteByID: [String: Note]
+    public private(set) var childCountByID: [String: Int]
+    public init(board: Board) {
+        var noteByID: [String: Note] = [:]
+        var childCountByID: [String: Int] = [:]
+        for note in board.notes {
+            if noteByID[note.id] == nil { noteByID[note.id] = note }
+            if let parentID = note.parentID { childCountByID[parentID, default: 0] += 1 }
+        }
+        self.noteByID = noteByID
+        self.childCountByID = childCountByID
+    }
+    public func note(_ id: String?) -> Note? { id.flatMap { noteByID[$0] } }
+    public func childCount(_ id: String) -> Int { childCountByID[id] ?? 0 }
+}
+
 public enum BoardTitleDraftDecision: Equatable { case unchanged, invalid, conflict, save }
 public enum BoardTitleDraft {
     public static func decision(baseline: String, draft: String, current: String) -> BoardTitleDraftDecision {

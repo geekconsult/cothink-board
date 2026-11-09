@@ -36,6 +36,16 @@ private struct CanvasShortcutMonitor: NSViewRepresentable {
     }
 }
 
+/// The one drag-movement resolution per canvas body evaluation: which note and
+/// group IDs shift by how much. Resolved once for the frame and passed down, so
+/// note tiles never recompute selectionMovement themselves.
+struct CanvasDragMovement {
+    var noteIDs: Set<String> = []
+    var groupIDs: Set<String> = []
+    var dx: Double = 0
+    var dy: Double = 0
+}
+
 @main
 struct CoThinkApp: App {
     @StateObject private var model = BoardViewModel()
@@ -1253,16 +1263,18 @@ struct WorkspaceView: View {
 
     func boardCanvas(_ board: Board) -> some View {
         let hidden = board.hiddenNoteIDs()
+        let indexes = BoardIndexes(board: board)
+        let movement = canvasDragMovement(board)
         let noteRects = board.notes.filter { !hidden.contains($0.id) }.map { note in
-            let note = displayed(note)
+            let note = displayed(note, movement: movement)
             return BoardRect(x: note.x, y: note.y, width: note.width, height: note.height)
         }
         let routeRects = board.connections.flatMap { edge -> [BoardRect] in
             guard !hidden.contains(edge.from), !hidden.contains(edge.to),
-                  let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) else { return [] }
-            return displayedConnection(edge).controlPoints(from: displayed(from), to: displayed(to)).map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
+                  let from = indexes.note(edge.from), let to = indexes.note(edge.to) else { return [] }
+            return displayedConnection(edge).controlPoints(from: displayed(from, movement: movement), to: displayed(to, movement: movement)).map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
         }
-        let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0) } + routeRects)
+        let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0, movement: movement) } + routeRects)
         return ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 WallpaperBackgroundView(board: board,
@@ -1349,19 +1361,19 @@ struct WorkspaceView: View {
                         Divider()
                         Button("New Note") { model.addNote() }
                     }
-                ForEach(board.groups) { group in groupView(group) }
+                ForEach(board.groups) { group in groupView(group, movement: movement) }
                 ForEach(board.notes.filter { note in
                     guard let parentID = note.parentID else { return false }
                     return !hidden.contains(note.id) && !hidden.contains(parentID)
                 }) { note in
-                    if let parent = board.notes.first(where: { $0.id == note.parentID }) {
-                        TreeEdgeView(from: displayed(parent), to: displayed(note), canvasWidth: extent.width, canvasHeight: extent.height)
+                    if let parent = indexes.note(note.parentID) {
+                        TreeEdgeView(from: displayed(parent, movement: movement), to: displayed(note, movement: movement), canvasWidth: extent.width, canvasHeight: extent.height)
                     }
                 }
                 ForEach(board.connections) { edge in
                     if !hidden.contains(edge.from) && !hidden.contains(edge.to),
-                       let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
-                        ConnectionView(from: displayed(from), to: displayed(to), edge: displayedConnection(edge), selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
+                       let from = indexes.note(edge.from), let to = indexes.note(edge.to) {
+                        ConnectionView(from: displayed(from, movement: movement), to: displayed(to, movement: movement), edge: displayedConnection(edge), selected: model.selectedConnectionID == edge.id, canvasWidth: extent.width, canvasHeight: extent.height)
                             .onTapGesture {
                                 selectConnection(edge.id)
                             }
@@ -1371,7 +1383,7 @@ struct WorkspaceView: View {
                             })
                     }
                 }
-                ForEach(board.notes.filter { !hidden.contains($0.id) }) { note in noteView(note, board: board) }
+                ForEach(board.notes.filter { !hidden.contains($0.id) }) { note in noteView(note, board: board, indexes: indexes, movement: movement) }
                 if let start = selectionStart, let end = selectionEnd {
                     let rect = BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y)
                     Rectangle().fill(Color.accentColor.opacity(0.12))
@@ -1403,12 +1415,12 @@ struct WorkspaceView: View {
                 if let note = board.notes.first(where: { $0.id == model.selectedNoteID }) {
                     resizeHandles(id: note.id, rect: BoardRect(x: note.x, y: note.y, width: note.width, height: note.height), isNote: true,
                                   minWidth: note.extentMinWidth, minHeight: note.extentMinHeight)
-                    connectionHandle(note, board: board)
+                    connectionHandle(note, board: board, movement: movement)
                 } else if let group = board.groups.first(where: { $0.id == model.selectedGroupID }) {
                     resizeHandles(id: group.id, rect: BoardRect(x: group.x, y: group.y, width: group.width, height: group.height), isNote: false)
                 } else if let edge = board.connections.first(where: { $0.id == model.selectedConnectionID }),
-                          let from = board.notes.first(where: { $0.id == edge.from }), let to = board.notes.first(where: { $0.id == edge.to }) {
-                    routeHandles(edge, from: displayed(from), to: displayed(to))
+                          let from = indexes.note(edge.from), let to = indexes.note(edge.to) {
+                    routeHandles(edge, from: displayed(from, movement: movement), to: displayed(to, movement: movement))
                 }
             }
             .frame(width: extent.width, height: extent.height)
@@ -1531,30 +1543,38 @@ struct WorkspaceView: View {
         }
     }
 
-    func displayed(_ note: Note) -> Note {
+    // One selectionMovement/groupMovement resolution per frame, matching the
+    // drag mode. A single-note drag keeps groups static on purpose; a selection
+    // drag carries the groups its expansion touches.
+    func canvasDragMovement(_ board: Board) -> CanvasDragMovement? {
+        if draggingSelection {
+            let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height)
+            return CanvasDragMovement(noteIDs: delta.noteIDs, groupIDs: delta.groupIDs, dx: delta.dx, dy: delta.dy)
+        }
+        if let draggedID = draggingID, board.notes.contains(where: { $0.id == draggedID }) {
+            let delta = board.selectionMovement(noteIDs: [draggedID], dx: dragTranslation.width, dy: dragTranslation.height)
+            return CanvasDragMovement(noteIDs: delta.noteIDs, groupIDs: [], dx: delta.dx, dy: delta.dy)
+        }
+        if let groupID = draggingID, let group = board.groups.first(where: { $0.id == groupID }) {
+            let delta = board.groupMovement(id: groupID, dx: dragTranslation.width, dy: dragTranslation.height) ?? (dx: 0, dy: 0)
+            return CanvasDragMovement(noteIDs: Set(group.memberIDs ?? []), groupIDs: [groupID], dx: delta.dx, dy: delta.dy)
+        }
+        return nil
+    }
+
+    func displayed(_ note: Note, movement: CanvasDragMovement?) -> Note {
         var result = note
         if let state = resizeState, state.id == note.id {
             let rect = state.preview
             result.x = rect.x; result.y = rect.y; result.width = rect.width; result.height = rect.height
-        } else if let board = model.board {
-            if draggingSelection {
-                let delta = board.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height)
-                if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
-            } else if let draggedID = draggingID, board.notes.contains(where: { $0.id == draggedID }) {
-                let delta = board.selectionMovement(noteIDs: [draggedID], dx: dragTranslation.width, dy: dragTranslation.height)
-                if delta.noteIDs.contains(note.id) { result.x += delta.dx; result.y += delta.dy }
-            } else if let groupID = draggingID, let group = board.groups.first(where: { $0.id == groupID }), group.memberIDs?.contains(note.id) == true {
-                if let delta = board.groupMovement(id: group.id, dx: dragTranslation.width, dy: dragTranslation.height) {
-                    result.x = note.x + delta.dx
-                    result.y = note.y + delta.dy
-                }
-            }
+        } else if let movement, movement.noteIDs.contains(note.id) {
+            result.x += movement.dx; result.y += movement.dy
         }
         return result
     }
 
-    func connectionHandle(_ note: Note, board: Board) -> some View {
-        let shown = displayed(note)
+    func connectionHandle(_ note: Note, board: Board, movement: CanvasDragMovement?) -> some View {
+        let shown = displayed(note, movement: movement)
         return Image(systemName: "arrow.right.circle.fill")
             .font(.system(size: 19))
             .foregroundStyle(Color.accentColor, Color(nsColor: .controlBackgroundColor))
@@ -1620,12 +1640,12 @@ struct WorkspaceView: View {
         return BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: note)
     }
 
-    func noteView(_ note: Note, board: Board) -> some View {
+    func noteView(_ note: Note, board: Board, indexes: BoardIndexes, movement: CanvasDragMovement?) -> some View {
         NoteTile(
-            note: displayed(note),
+            note: displayed(note, movement: movement),
             selected: model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id) || marqueeHighlight(note),
             isEditing: editingObjectID == note.id && !editingGroupTitle,
-            childCount: board.children(of: note.id).count,
+            childCount: indexes.childCount(note.id),
             folded: note.collapsed == true,
             imagePath: note.imagePath,
             assets: board.projectAssets,
@@ -1646,8 +1666,8 @@ struct WorkspaceView: View {
                         .accessibilityLabel(locked ? "Unlock note from group" : "Lock note to \(group.title)")
                 }
             }
-            .frame(width: displayed(note).width, height: displayed(note).height)
-            .position(x: displayed(note).x + displayed(note).width / 2, y: displayed(note).y + displayed(note).height / 2)
+            .frame(width: displayed(note, movement: movement).width, height: displayed(note, movement: movement).height)
+            .position(x: displayed(note, movement: movement).x + displayed(note, movement: movement).width / 2, y: displayed(note, movement: movement).y + displayed(note, movement: movement).height / 2)
             .onTapGesture {
                 let inSelection = model.selectedNoteIDs.contains(note.id) || model.selectedNoteID == note.id
                 let clickedAnotherObject = !inSelection || model.selectedGroupID != nil
@@ -1711,15 +1731,14 @@ struct WorkspaceView: View {
             }
     }
 
-    func displayedGroupRect(_ group: BoardGroup) -> BoardRect {
-        let selectionDelta = draggingSelection ? model.board?.selectionMovement(noteIDs: model.selectedNoteIDs, dx: dragTranslation.width, dy: dragTranslation.height) : nil
-        let delta = selectionDelta?.groupIDs.contains(group.id) == true ? (dx: selectionDelta!.dx, dy: selectionDelta!.dy) : (draggingID == group.id ? model.board?.groupMovement(id: group.id, dx: dragTranslation.width, dy: dragTranslation.height) : nil)
-        let dx = delta?.dx ?? 0, dy = delta?.dy ?? 0
+    func displayedGroupRect(_ group: BoardGroup, movement: CanvasDragMovement?) -> BoardRect {
+        let dx = movement?.groupIDs.contains(group.id) == true ? movement?.dx ?? 0 : 0
+        let dy = movement?.groupIDs.contains(group.id) == true ? movement?.dy ?? 0 : 0
         return resizeState?.id == group.id ? resizeState!.preview : BoardRect(x: group.x + dx, y: group.y + dy, width: group.width, height: group.height)
     }
 
-    func groupView(_ group: BoardGroup) -> some View {
-        let rect = displayedGroupRect(group)
+    func groupView(_ group: BoardGroup, movement: CanvasDragMovement?) -> some View {
+        let rect = displayedGroupRect(group, movement: movement)
         var preview = group
         preview.x = rect.x; preview.y = rect.y; preview.width = rect.width; preview.height = rect.height
         return GroupTile(
