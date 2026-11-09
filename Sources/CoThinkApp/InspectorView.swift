@@ -417,7 +417,7 @@ struct InspectorView: View {
 
     @ViewBuilder
     var imageAttachmentPreview: some View {
-        if let image = NSImage(contentsOfFile: imagePath) {
+        if let image = ImageCache.image(atPath: imagePath) {
             Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 120).clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
             Label("Image file not found", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)

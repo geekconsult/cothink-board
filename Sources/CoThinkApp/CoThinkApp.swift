@@ -1837,7 +1837,7 @@ struct WorkspaceView: View {
 
 struct MascotLogo: View {
     var body: some View {
-        if let path = Bundle.main.path(forResource: "Mascot", ofType: "png"), let mascot = NSImage(contentsOfFile: path) {
+        if let path = Bundle.main.path(forResource: "Mascot", ofType: "png"), let mascot = ImageCache.image(atPath: path) {
             Image(nsImage: mascot).resizable().scaledToFit().accessibilityLabel("CoThink mascot")
         } else {
             Image(systemName: "note.text").resizable().scaledToFit().padding(8).foregroundStyle(.secondary)
@@ -2003,7 +2003,7 @@ struct NoteTile: View {
                         .foregroundStyle(Color.readableText(on: note.color))
                         .multilineTextAlignment(.center)
                 }
-                if let imagePath, let image = NSImage(contentsOfFile: imagePath) {
+                if let imagePath, let image = ImageCache.image(atPath: imagePath) {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFit()
@@ -2014,7 +2014,7 @@ struct NoteTile: View {
                 ForEach(assets.filter { note.assetIDs?.contains($0.id) == true }) { asset in
                     let url = projectFilesDirectory.appendingPathComponent(asset.relativePath)
                     if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true,
-                       let image = NSImage(contentsOf: url) {
+                       let image = ImageCache.image(at: url) {
                         Button { NSWorkspace.shared.open(url) } label: {
                             Image(nsImage: image)
                                 .resizable()
