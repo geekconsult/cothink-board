@@ -17,7 +17,6 @@ private struct InspectorDraftSnapshot: Equatable {
     var fontSize: Double
     var label: String
     var shape: NoteShape?
-    var icon: NoteIcon?
     var x: Double
     var y: Double
     var width: Double
@@ -41,7 +40,6 @@ struct InspectorView: View {
     @State private var fontSize = 15.0
     @State private var label = ""
     @State private var shape: NoteShape?
-    @State private var icon: NoteIcon?
     @State private var text = ""
     @State private var imagePath = ""
     @State private var assetIDs: [String] = []
@@ -62,7 +60,7 @@ struct InspectorView: View {
     private var draftSnapshot: InspectorDraftSnapshot {
         InspectorDraftSnapshot(text: text, imagePath: imagePath, assetIDs: assetIDs, title: title, color: color,
                                strokeColor: strokeColor, strokeWidth: strokeWidth, strokeStyle: strokeStyle,
-                               direction: direction, route: route, fontSize: fontSize, label: label, shape: shape, icon: icon, x: x, y: y, width: width, height: height)
+                               direction: direction, route: route, fontSize: fontSize, label: label, shape: shape, x: x, y: y, width: width, height: height)
     }
 
     var body: some View {
@@ -184,7 +182,6 @@ struct InspectorView: View {
             }
             geometryFields
             shapeControl
-            iconControl
             fontSizeControl
             colors
             strokeControls
@@ -199,18 +196,6 @@ struct InspectorView: View {
             }
         } label: {
             Label("Shape: \(shape?.rawValue.capitalized ?? "None")", systemImage: "square.on.circle")
-        }
-        .menuStyle(.borderlessButton)
-    }
-
-    private var iconControl: some View {
-        Menu {
-            Button("None") { icon = nil }
-            ForEach(NoteIcon.allCases, id: \.self) { option in
-                Button(option.displayName) { icon = option }
-            }
-        } label: {
-            Label("Icon: \(icon?.displayName ?? "None")", systemImage: "square.3.layers.3d")
         }
         .menuStyle(.borderlessButton)
     }
@@ -565,7 +550,7 @@ struct InspectorView: View {
         guard hasDraft else { saveStatus = "Saved"; return }
         if let baseline = baselineNote {
             guard let latest = current.notes.first(where: { $0.id == baseline.id }) else { blockDraft("The note was deleted elsewhere."); return }
-            let changed = fontSize != (baseline.fontSize ?? 15) || text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(baseline.extentMinWidth, width) != baseline.width || max(baseline.extentMinHeight, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle) || shape != baseline.shape || icon?.rawValue != baseline.icon
+            let changed = fontSize != (baseline.fontSize ?? 15) || text != baseline.text || imagePath != (baseline.imagePath ?? "") || assetIDs != (baseline.assetIDs ?? []) || color != baseline.color || x != baseline.x || y != baseline.y || max(baseline.extentMinWidth, width) != baseline.width || max(baseline.extentMinHeight, height) != baseline.height || strokeChanged(baseline.strokeColor, baseline.strokeWidth, baseline.strokeStyle) || shape != baseline.shape
             guard changed else { saveStatus = "Saved"; return }
             guard latest == baseline else { blockDraft("The note changed elsewhere."); return }
             if model.mutate({ board in
@@ -578,7 +563,6 @@ struct InspectorView: View {
                 board.notes[i].imagePath = imagePath.isEmpty ? nil : imagePath
                 board.notes[i].assetIDs = assetIDs
                 board.notes[i].shape = shape
-                board.notes[i].icon = icon?.rawValue
                 board.notes[i].width = max(board.notes[i].extentMinWidth, width)
                 if board.notes[i].autofitsHeight, text != baseline.text || max(baseline.extentMinWidth, width) != baseline.width {
                     board.notes[i].height = NoteContentSizing.height(for: text, fontSize: fontSize, width: max(baseline.extentMinWidth, width))
@@ -655,7 +639,6 @@ struct InspectorView: View {
             fontSize = note.fontSize ?? 15
             text = note.text; imagePath = note.imagePath ?? ""; assetIDs = note.assetIDs ?? []; color = note.color; x = note.x; y = note.y; width = note.width; height = note.height
             shape = note.shape
-            icon = note.icon.flatMap(NoteIcon.init(rawValue:))
             strokeColor = note.strokeColor ?? "#6F7785"; strokeWidth = note.strokeWidth ?? 1; strokeStyle = note.strokeStyle ?? .solid
         } else if let group {
             fontSize = group.fontSize ?? 11

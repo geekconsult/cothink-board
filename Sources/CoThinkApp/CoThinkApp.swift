@@ -39,7 +39,7 @@ private struct CanvasShortcutMonitor: NSViewRepresentable {
 /// The armed canvas tool. `.note` is the default: every other case trades the
 /// empty-canvas click away from creating notes.
 enum CanvasTool: Equatable {
-    case note, select, shape(NoteShape), icon(NoteIcon)
+    case note, select, shape(NoteShape)
 }
 
 /// Resolved once per canvas frame and passed down, so note tiles never
@@ -294,9 +294,6 @@ final class BoardViewModel: ObservableObject {
 
     func addShape(_ shape: NoteShape, frame: BoardRect, flipped: Bool) {
         appendNote(Note.makeShape(shape, x: frame.x, y: frame.y, width: frame.width, height: frame.height, flipped: flipped), opensEditor: shape == .text)
-    }
-    func addIcon(_ icon: NoteIcon, frame: BoardRect) {
-        appendNote(Note.makeIcon(icon, x: frame.x, y: frame.y, width: frame.width, height: frame.height), opensEditor: false)
     }
 
     private func appendNote(_ note: Note, opensEditor: Bool) {
@@ -708,11 +705,6 @@ struct WorkspaceView: View {
     @State private var tool: CanvasTool = .note
     @State private var shapeDraft: CGRect?
     @State private var shapeDraftFlipped = false
-    private var isPlacementTool: Bool {
-        if case .shape = tool { return true }
-        if case .icon = tool { return true }
-        return false
-    }
     @State private var connectionDrag: ConnectionDrag?
     @State private var routePointDrag: RoutePointDrag?
     @State private var drawingGroup = false
@@ -1195,8 +1187,6 @@ struct WorkspaceView: View {
                     toolStatusRow("Select · drag to select notes · Esc to cancel")
                 } else if case .shape(let kind) = tool {
                     toolStatusRow("Creating: \(kind.rawValue) · drag or click to place · Esc to cancel")
-                } else if case .icon(let kind) = tool {
-                    toolStatusRow("Creating: \(kind.displayName) icon · drag or click to place · Esc to cancel")
                 } else if model.connectingFrom != nil {
                     Text("Select another note to connect").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if drawingGroup {
@@ -1224,12 +1214,6 @@ struct WorkspaceView: View {
                 Button("Line") { tool = .shape(.line) }
             } label: { Label("Shape", systemImage: "square.on.circle") }
                 .modifier(GlassControl()).help("Add a diagram shape").disabled(board == nil)
-            Menu {
-                ForEach(NoteIcon.allCases, id: \.self) { icon in
-                    Button { tool = .icon(icon) } label: { Label(icon.displayName, systemImage: icon.menuSymbol) }
-                }
-            } label: { Label("Icon", systemImage: "square.3.layers.3d") }
-                .modifier(GlassControl()).help("Add an architecture icon object").disabled(board == nil)
             Button(drawingGroup ? "Cancel group" : "Group", systemImage: "square.dashed") { requestGroup() }
                 .modifier(GlassControl()).help("Group selected notes or draw a group (⇧⌘G)").disabled(board == nil)
             Button("Connect", systemImage: "arrow.up.right") {
@@ -1343,8 +1327,6 @@ struct WorkspaceView: View {
                                     model.clearSelection()
                                 case .shape(let kind):
                                     model.addShape(kind, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: kind == .line ? 80 : kind == .text ? 40 : 120), flipped: false)
-                                case .icon(let kind):
-                                    model.addIcon(kind, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: 120))
                                 case .note:
                                     model.addNote(x: max(0, tap.location.x - 95), y: max(0, tap.location.y - 50))
                                 }
@@ -1360,8 +1342,8 @@ struct WorkspaceView: View {
                         })
                     .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("boardCanvas"))
                         .onChanged { value in
-                            // While a shape or icon tool is armed, ⌘-drag still marquees.
-                            if isPlacementTool, selectionStart == nil, shapeDraft != nil || !NSEvent.modifierFlags.contains(.command) {
+                            // While a shape tool is armed, ⌘-drag still marquees.
+                            if case .shape = tool, selectionStart == nil, shapeDraft != nil || !NSEvent.modifierFlags.contains(.command) {
                                 if shapeDraft == nil {
                                     finishInlineEditing()
                                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -1382,20 +1364,6 @@ struct WorkspaceView: View {
                             }
                             selectionEnd = value.location
                         }.onEnded { value in
-                            if case .icon(let kind) = tool, shapeDraft != nil {
-                                defer { shapeDraft = nil }
-                                guard !model.draftBlocked else { return }
-                                let dx = value.location.x - value.startLocation.x
-                                let dy = value.location.y - value.startLocation.y
-                                if abs(dx) < 8, abs(dy) < 8 {
-                                    model.addIcon(kind, frame: BoardRect(x: value.startLocation.x, y: value.startLocation.y, width: 160, height: 120))
-                                } else {
-                                    model.addIcon(kind, frame: BoardRect(x: min(value.startLocation.x, value.location.x),
-                                                                          y: min(value.startLocation.y, value.location.y),
-                                                                          width: max(1, abs(dx)), height: max(1, abs(dy))))
-                                }
-                                return
-                            }
                             if case .shape(let kind) = tool, shapeDraft != nil {
                                 defer { shapeDraft = nil }
                                 guard !model.draftBlocked else { return }
@@ -1461,19 +1429,6 @@ struct WorkspaceView: View {
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.x + rect.width / 2, y: rect.y + rect.height / 2)
                         .allowsHitTesting(false)
-                }
-                if case .icon(let iconTool) = tool, let draft = shapeDraft {
-                    let glyph = NoteIcon.glyphSize(width: draft.width, height: draft.height)
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                        IconGlyph(icon: iconTool)
-                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: NoteIcon.svgStrokeWidth * glyph / NoteIcon.svgViewBox, lineCap: .round, lineJoin: .round))
-                            .frame(width: glyph, height: glyph)
-                    }
-                    .frame(width: draft.width, height: draft.height)
-                    .position(x: draft.midX, y: draft.midY)
-                    .allowsHitTesting(false)
                 }
                 if case .shape(let tool) = tool, let draft = shapeDraft {
                     let preview: AnyShape = switch tool {
@@ -2072,7 +2027,7 @@ struct NoteTile: View {
                     .contentShape(DiagonalLine(flipped: note.lineFlipped == true).stroke(lineWidth: 14))
                     .overlay(selectionRing)
             } else {
-            VStack(alignment: note.icon == nil && (note.shape == nil || note.shape == .text) ? .leading : .center, spacing: 6) {
+            VStack(alignment: note.shape == nil || note.shape == .text ? .leading : .center, spacing: 6) {
                 if isEditing {
                     TextEditor(text: $text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
@@ -2083,17 +2038,6 @@ struct NoteTile: View {
                         .onChange(of: textFocused) { _, focused in if !focused { onFinishEditing() } }
                         .onAppear { DispatchQueue.main.async { textFocused = true } }
                         .onExitCommand(perform: onFinishEditing)
-                } else if let raw = note.icon, let icon = NoteIcon(rawValue: raw) {
-                    let size = NoteIcon.glyphSize(width: note.width, height: note.height)
-                    IconGlyph(icon: icon)
-                        .stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: StrokeStyle(lineWidth: NoteIcon.svgStrokeWidth * size / NoteIcon.svgViewBox, lineCap: .round, lineJoin: .round))
-                        .frame(width: size, height: size)
-                    if !note.text.isEmpty {
-                        Text(note.text)
-                            .font(.system(size: note.fontSize ?? 15, weight: .medium))
-                            .foregroundStyle(Color.readableText(on: note.color))
-                            .multilineTextAlignment(.center)
-                    }
                 } else if note.shape == nil {
                     Text(note.text.isEmpty ? "Empty note" : note.text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
@@ -2144,7 +2088,7 @@ struct NoteTile: View {
                 }
                 if note.shape == nil || note.shape == .text { Spacer(minLength: 0) }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: note.icon == nil && (note.shape == nil || note.shape == .text) ? .topLeading : .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: note.shape == nil || note.shape == .text ? .topLeading : .center)
             .padding(isEditing ? 8 : 16)
             .contentShape(note.shape == .text ? AnyShape(Rectangle()) : tileShape)
             .background {
@@ -2387,17 +2331,5 @@ struct MCPSetupView: View {
                 Text("Local · stdio").font(.caption).foregroundStyle(.secondary)
             }
         }.padding(18).frame(width: 450)
-    }
-}
-
-extension NoteIcon {
-    var menuSymbol: String {
-        switch self {
-        case .cloud: return "cloud.fill"
-        case .database: return "externaldrive.fill"
-        case .compute: return "memorychip"
-        case .network: return "network"
-        case .users: return "person.2.fill"
-        }
     }
 }
