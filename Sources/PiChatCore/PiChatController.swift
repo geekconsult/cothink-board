@@ -14,8 +14,13 @@ public struct PiModel: Identifiable, Equatable {
     public let provider: String
     public let id: String
     public let name: String
+    public let reasoning: Bool
     public var key: String { provider + "/" + id }
-    public init(provider: String, id: String, name: String) { self.provider = provider; self.id = id; self.name = name }
+    public init(provider: String, id: String, name: String, reasoning: Bool) { self.provider = provider; self.id = id; self.name = name; self.reasoning = reasoning }
+    public init?(modelDictionary: [String: Any]) {
+        guard let id = modelDictionary["id"] as? String else { return nil }
+        self.init(provider: modelDictionary["provider"] as? String ?? "", id: id, name: modelDictionary["name"] as? String ?? id, reasoning: modelDictionary["reasoning"] as? Bool ?? false)
+    }
 }
 
 public enum ChatPhase: Equatable {
@@ -69,7 +74,12 @@ public final class PiChatController: ObservableObject {
     @Published public private(set) var activityText = ""
     @Published public private(set) var contextUsage = ContextUsage()
     @Published public private(set) var currentSessionFile = ""
+    @Published public private(set) var thinkingLevel = ""
+    @Published public private(set) var rememberedThinkingLevel = "high"
     public var pendingModelKey: String?
+    public var supportsThinking: Bool { availableModels.first { $0.key == currentModelKey }?.reasoning == true }
+    public var canToggleThinking: Bool { supportsThinking && (phase == .ready || phase == .running) }
+    private var currentModelKey = ""
 
     private var process: Process?
     private var sessionLease: SessionLease?
@@ -110,7 +120,7 @@ public final class PiChatController: ObservableObject {
             return
         }
         previousLease?.release()
-        messages = []; modelName = ""; availableModels = []; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false
+        messages = []; modelName = ""; availableModels = []; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false; thinkingLevel = ""; currentModelKey = ""
         contextUsage = ContextUsage(); currentSessionFile = ""
         guard FileManager.default.isExecutableFile(atPath: piPath) else { phase = .failed("Choose an executable Pi binary in chat settings."); return }
         guard FileManager.default.fileExists(atPath: extensionPath), FileManager.default.isExecutableFile(atPath: mcpPath) else { phase = .failed("CoThink's bundled Pi bridge or MCP server is missing. Rebuild the app."); return }
@@ -197,6 +207,12 @@ public final class PiChatController: ObservableObject {
         guard let separator = key.firstIndex(of: "/") else { return }
         sendCommand(["id": UUID().uuidString, "type": "set_model", "provider": String(key[key.startIndex..<separator]), "modelId": String(key[key.index(after: separator)...])])
     }
+    public func setThinking(enabled: Bool) {
+        guard canToggleThinking else { return }
+        let level = enabled ? rememberedThinkingLevel : "off"
+        observeThinkingLevel(level)
+        sendCommand(["id": UUID().uuidString, "type": "set_thinking_level", "level": level])
+    }
     public func stop() {
         startupTask?.cancel(); startupTask = nil
         generation = UUID()
@@ -205,7 +221,7 @@ public final class PiChatController: ObservableObject {
         if let process, process.isRunning { process.terminate() }
         else { sessionLease?.release() }
         process = nil; sessionLease = nil; input = nil; stdout = nil; stderr = nil
-        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false; boardConflict = nil
+        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false; boardConflict = nil; thinkingLevel = ""; currentModelKey = ""
     }
     private func fail(_ message: String) {
         stop(); phase = .failed(message)
@@ -266,23 +282,24 @@ public final class PiChatController: ObservableObject {
                 if command == "get_state" || command == "get_messages" { fail(error) } else { messages.append(ChatMessage(role: .error, text: error)); if phase == .running { phase = .ready } }
             } else if command == "get_state" {
                 let state = event["data"] as? [String: Any]
-                if let model = state?["model"] as? [String: Any] { modelName = model["name"] as? String ?? model["id"] as? String ?? "" }
+                if let model = (state?["model"] as? [String: Any]).flatMap(PiModel.init(modelDictionary:)) {
+                    modelName = model.name
+                    currentModelKey = model.key
+                }
                 if let state {
+                    if let level = state["thinkingLevel"] as? String { observeThinkingLevel(level) }
                     contextUsage = ContextUsage.update(fromState: state, into: contextUsage)
                     if let file = state["sessionFile"] as? String { currentSessionFile = file }
                 }
                 readyPi = true; updateReadiness()
                 sendCommand(["id": "models", "type": "get_available_models"])
             } else if command == "get_available_models" {
-                let models = ((event["data"] as? [String: Any])?["models"] as? [[String: Any]] ?? []).compactMap { entry -> PiModel? in
-                    guard let id = entry["id"] as? String else { return nil }
-                    return PiModel(provider: entry["provider"] as? String ?? "", id: id, name: entry["name"] as? String ?? id)
-                }
+                let models = ((event["data"] as? [String: Any])?["models"] as? [[String: Any]] ?? []).compactMap(PiModel.init(modelDictionary:))
                 availableModels = models.sorted { ($0.provider, $0.name) < ($1.provider, $1.name) }
-            } else if command == "set_model", let model = event["data"] as? [String: Any] {
-                let name = model["name"] as? String ?? model["id"] as? String ?? ""
-                modelName = name
-                messages.append(ChatMessage(role: .activity, text: "Switched to \(name)."))
+            } else if command == "set_model", let model = (event["data"] as? [String: Any]).flatMap(PiModel.init(modelDictionary:)) {
+                modelName = model.name
+                currentModelKey = model.key
+                messages.append(ChatMessage(role: .activity, text: "Switched to \(model.name)."))
             } else if command == "get_messages", phase == .starting {
                 guard let data = event["data"] as? [String: Any], let previous = data["messages"] as? [[String: Any]] else { fail("Pi returned invalid chat history."); return }
                 for item in previous {
@@ -296,12 +313,12 @@ public final class PiChatController: ObservableObject {
         case "message_start":
             if let message = event["message"] as? [String: Any], (message["role"] as? String) == "assistant" { assistantID = nil }
         case "agent_start":
-            if phase == .running { setActivity("Thinking…", record: true) }
+            if phase == .running { setActivity(thinkingActivityLabel, record: true) }
         case "message_update":
             if let delta = event["assistantMessageEvent"] as? [String: Any] {
                 switch delta["type"] as? String {
                 case "thinking_start", "thinking_delta":
-                    if phase == .running { setActivity("Thinking…", record: true) }
+                    if phase == .running { setActivity(thinkingActivityLabel, record: true) }
                 case "text_delta":
                     guard let text = delta["delta"] as? String else { return }
                     activityText = "Writing response…"
@@ -348,14 +365,16 @@ public final class PiChatController: ObservableObject {
                         boardConflict = nil
                     }
                 }
-                activityText = "Thinking…"
+                activityText = thinkingActivityLabel
             }
         case "extension_error":
             reportFailure(event["error"] as? String ?? "Pi extension error.")
         case "auto_retry_start":
             setActivity("Retrying with Pi…", record: true)
         case "auto_retry_end":
-            if phase == .running { setActivity("Thinking…", record: true) }
+            if phase == .running { setActivity(thinkingActivityLabel, record: true) }
+        case "thinking_level_changed":
+            if let level = event["level"] as? String { observeThinkingLevel(level) }
         case "agent_end":
             if phase == .running {
                 let reply = messages.last(where: { $0.role == .assistant })?.text ?? ""
@@ -365,6 +384,11 @@ public final class PiChatController: ObservableObject {
         default: break
         }
     }
+    private func observeThinkingLevel(_ level: String) {
+        thinkingLevel = level
+        if level != "off" { rememberedThinkingLevel = level }
+    }
+    private var thinkingActivityLabel: String { thinkingLevel == "off" ? "Working…" : "Thinking…" }
     private func setActivity(_ text: String, record: Bool = false) {
         activityText = text
         if record && (messages.last?.role != .activity || messages.last?.text != text) {

@@ -255,6 +255,140 @@ done
         controller.stop()
     }
 
+    @MainActor
+    func testThinkingToggleSendsOffAndRestoresRememberedLevel() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pi = dir.appendingPathComponent("pi"), ext = dir.appendingPathComponent("extension.ts")
+        let log = dir.appendingPathComponent("stdin.log")
+        let script = #"""
+#!/bin/bash
+printf 'COTHINK_MCP_READY\n' >&2
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> '\#(log.path)'
+  if [[ "$line" == *'get_state'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_state","success":true,"data":{"thinkingLevel":"high","model":{"id":"glm-x","name":"GLM X","provider":"zai"}}}'
+  elif [[ "$line" == *'get_available_models'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"glm-x","name":"GLM X","provider":"zai","reasoning":true}]}}'
+  elif [[ "$line" == *'get_messages'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[]}}'
+  elif [[ "$line" == *'set_thinking_level'* ]]; then
+    level=$(printf '%s' "$line" | sed -E 's/.*"level":"([^"]+)".*/\1/')
+    if [[ "$level" == "high" ]]; then settled="medium"; else settled="$level"; fi
+    printf '%s\n' '{"type":"response","command":"set_thinking_level","success":true}' '{"type":"thinking_level_changed","level":"'$settled'"}'
+  fi
+done
+"""#
+        try script.write(to: pi, atomically: true, encoding: .utf8)
+        try "".write(to: ext, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pi.path)
+        func setLines() throws -> [String] {
+            try String(contentsOf: log, encoding: .utf8).components(separatedBy: .newlines).filter { $0.contains("set_thinking_level") }
+        }
+        let controller = PiChatController()
+        controller.start(options: PiChatStartOptions(boardID: "thinking-board", piPath: pi.path, extensionPath: ext.path, mcpPath: pi.path, home: dir))
+        for _ in 0..<100 where controller.phase != .ready || controller.thinkingLevel != "high" || !controller.supportsThinking { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertEqual(controller.thinkingLevel, "high")
+        XCTAssertTrue(controller.supportsThinking)
+        controller.setThinking(enabled: false)
+        for _ in 0..<100 where (try setLines()).count < 1 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.thinkingLevel, "off")
+        XCTAssertEqual(try setLines().last?.contains(#""level":"off""#), true)
+        controller.setThinking(enabled: true)
+        for _ in 0..<100 where (try setLines()).count < 2 || controller.thinkingLevel != "medium" { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.thinkingLevel, "medium")
+        XCTAssertEqual(try setLines().last?.contains(#""level":"high""#), true)
+        controller.setThinking(enabled: false)
+        for _ in 0..<100 where (try setLines()).count < 3 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.thinkingLevel, "off")
+        controller.setThinking(enabled: true)
+        for _ in 0..<100 where (try setLines()).count < 4 || controller.thinkingLevel != "medium" { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.thinkingLevel, "medium")
+        let sentLevels = try setLines()
+        XCTAssertEqual(sentLevels.count, 4)
+        XCTAssertEqual(sentLevels.last?.contains(#""level":"medium""#), true)
+        controller.stop()
+    }
+    @MainActor
+    func testThinkingUnavailableForNonReasoningModel() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pi = dir.appendingPathComponent("pi"), ext = dir.appendingPathComponent("extension.ts")
+        let log = dir.appendingPathComponent("stdin.log")
+        let script = #"""
+#!/bin/bash
+printf 'COTHINK_MCP_READY\n' >&2
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> '\#(log.path)'
+  if [[ "$line" == *'get_state'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_state","success":true,"data":{"thinkingLevel":"off","model":{"id":"plain","name":"Plain","provider":"local"}}}'
+  elif [[ "$line" == *'get_available_models'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"plain","name":"Plain","provider":"local","reasoning":false}]}}'
+  elif [[ "$line" == *'get_messages'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[]}}'
+  fi
+done
+"""#
+        try script.write(to: pi, atomically: true, encoding: .utf8)
+        try "".write(to: ext, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pi.path)
+        let controller = PiChatController()
+        controller.start(options: PiChatStartOptions(boardID: "plain-board", piPath: pi.path, extensionPath: ext.path, mcpPath: pi.path, home: dir))
+        for _ in 0..<100 where controller.phase != .ready || controller.availableModels.count != 1 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertEqual(controller.thinkingLevel, "off")
+        XCTAssertFalse(controller.supportsThinking)
+        controller.setThinking(enabled: true)
+        XCTAssertEqual(controller.thinkingLevel, "off")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let sent = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertFalse(sent.contains("set_thinking_level"))
+        controller.stop()
+    }
+    @MainActor
+    func testActivityLabelSaysWorkingWhenThinkingOff() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pi = dir.appendingPathComponent("pi"), ext = dir.appendingPathComponent("extension.ts")
+        let script = #"""
+#!/bin/bash
+printf 'COTHINK_MCP_READY\n' >&2
+while IFS= read -r line; do
+  if [[ "$line" == *'get_state'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_state","success":true,"data":{"thinkingLevel":"off","model":{"id":"glm-x","name":"GLM X","provider":"zai"}}}'
+  elif [[ "$line" == *'get_available_models'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"glm-x","name":"GLM X","provider":"zai","reasoning":true}]}}'
+  elif [[ "$line" == *'get_messages'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[]}}'
+  elif [[ "$line" == *'prompt'* ]]; then
+    printf '%s\n' '{"type":"response","command":"prompt","success":true}' '{"type":"agent_start"}' '{"type":"message_update","assistantMessageEvent":{"type":"thinking_start"}}' '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"hidden"}}'
+    sleep 0.3
+    printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Done."}}' '{"type":"agent_end"}'
+  fi
+done
+"""#
+        try script.write(to: pi, atomically: true, encoding: .utf8)
+        try "".write(to: ext, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pi.path)
+        let controller = PiChatController()
+        controller.start(options: PiChatStartOptions(boardID: "label-board", piPath: pi.path, extensionPath: ext.path, mcpPath: pi.path, home: dir))
+        for _ in 0..<100 where controller.phase != .ready || controller.thinkingLevel != "off" || !controller.supportsThinking { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertTrue(controller.supportsThinking)
+        controller.send("Hello")
+        for _ in 0..<100 where controller.activityText != "Working…" { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.activityText, "Working…")
+        for _ in 0..<100 where controller.phase != .ready { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertTrue(controller.messages.contains { $0.role == .activity && $0.text == "Working…" })
+        XCTAssertFalse(controller.messages.contains { $0.text == "Thinking…" })
+        controller.stop()
+    }
+
     func testBoardSkillPromptCoversRoundToolMapAndRules() {
         let prompt = CoThinkBoardSkill.systemPrompt
         XCTAssertTrue(prompt.contains("The round"), "The prompt must teach the read → plan → edit → verify round.")
