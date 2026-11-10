@@ -59,7 +59,7 @@ while IFS= read -r line; do
     printf '%s\n' '{"type":"response","command":"get_state","success":true,"data":{"model":{"id":"mock-model"}}}'
   elif [[ "$line" == *'get_messages'* ]]; then
     sleep 0.1
-    printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[{"role":"user","content":"Old question"},{"role":"assistant","content":[{"type":"text","text":"Old answer"}]}]}}'
+    printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[{"role":"user","content":"Old question","timestamp":1794281114920},{"role":"assistant","content":[{"type":"text","text":"Old answer"}],"timestamp":1794281123591}]}}'
   elif [[ "$line" == *'prompt'* ]]; then
     printf '%s\n' '{"type":"response","command":"prompt","success":true}' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Hello "}}' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"board"}}'
     printf '{"type":"tool_execution_end","padding":"'; head -c 5000000 /dev/zero | tr '\0' a; printf '"}\n'
@@ -79,12 +79,18 @@ done
         for _ in 0..<100 where controller.phase != .ready { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.phase, .ready)
         XCTAssertEqual(controller.messages.map(\.text), ["Old question", "Old answer"])
+        XCTAssertEqual(controller.messages.map(\.timestamp), [
+            Date(timeIntervalSince1970: 1794281114.920),
+            Date(timeIntervalSince1970: 1794281123.591),
+        ])
         XCTAssertTrue(controller.bridgeReady)
         XCTAssertEqual(controller.modelName, "mock-model")
         controller.send("Test")
         for _ in 0..<100 where controller.phase != .ready { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.phase, .ready)
         XCTAssertEqual(controller.messages.filter { $0.role == .assistant }.map(\.text), ["Old answer", "Hello board"])
+        let sent = controller.messages.last { $0.role == .user }
+        if let sent { XCTAssertTrue(sent.timestamp >= Date(timeIntervalSince1970: 1794281123.591)) }
         controller.stop()
         XCTAssertEqual(controller.phase, .stopped)
         controller.start(options: PiChatStartOptions(boardID: "b", piPath: dir.appendingPathComponent("missing").path, extensionPath: ext.path, mcpPath: mcp.path, home: dir))

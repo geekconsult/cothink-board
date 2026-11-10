@@ -123,7 +123,12 @@ struct PiChatView: View {
                             HStack(alignment: .bottom, spacing: 0) {
                                 if message.role == .user { Spacer(minLength: 30) }
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Text(label(message.role)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                                    HStack(spacing: 6) {
+                                        Text(label(message.role)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                                        Spacer(minLength: 0)
+                                        Text(message.timestamp, format: chatTimestampFormat(message.timestamp))
+                                            .font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
+                                    }
                                     markdownMessage(message.text).font(.system(size: chatFontSize)).textSelection(.enabled)
                                         .foregroundStyle(message.role == .error ? Color.red : Color.primary)
                                 }
@@ -252,6 +257,11 @@ struct PiChatView: View {
     }
     private func label(_ role: ChatMessage.Role) -> String {
         switch role { case .user: return "You"; case .assistant: return "Pi"; case .activity: return "Activity"; case .error: return "Error" }
+    }
+    private func chatTimestampFormat(_ date: Date) -> Date.FormatStyle {
+        Calendar.current.isDateInToday(date)
+            ? .dateTime.hour().minute()
+            : .dateTime.day().month(.abbreviated).hour().minute()
     }
     @ViewBuilder
     private func markdownMessage(_ text: String) -> some View {

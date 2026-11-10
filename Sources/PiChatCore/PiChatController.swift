@@ -7,7 +7,8 @@ public struct ChatMessage: Identifiable, Equatable {
     public let id: UUID
     public internal(set) var role: Role
     public var text: String
-    public init(role: Role, text: String) { self.id = UUID(); self.role = role; self.text = text }
+    public let timestamp: Date
+    public init(role: Role, text: String, timestamp: Date = Date()) { self.id = UUID(); self.role = role; self.text = text; self.timestamp = timestamp }
 }
 
 public struct PiModel: Identifiable, Equatable {
@@ -318,7 +319,10 @@ public final class PiChatController: ObservableObject {
                     guard let role = item["role"] as? String, ["user", "assistant"].contains(role) else { continue }
                     let parts = item["content"] as? [[String: Any]] ?? []
                     let text = (item["content"] as? String) ?? parts.filter { ($0["type"] as? String) == "text" }.compactMap { $0["text"] as? String }.joined()
-                    if !text.isEmpty { messages.append(ChatMessage(role: role == "user" ? .user : .assistant, text: text)) }
+                    if !text.isEmpty {
+                        let timestamp = (item["timestamp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) } ?? Date()
+                        messages.append(ChatMessage(role: role == "user" ? .user : .assistant, text: text, timestamp: timestamp))
+                    }
                 }
                 startupTask?.cancel(); phase = .ready
             }
