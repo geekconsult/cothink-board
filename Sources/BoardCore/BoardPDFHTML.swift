@@ -189,19 +189,6 @@ public enum BoardPDFHTML {
             let imageSource = (["legacy:\(n.id)"] + (n.assetIDs ?? [])).compactMap { images[$0] }.first { $0.hasPrefix("data:image/") }
             let image = imageSource.map { "<image href=\"\(escape($0))\" x=\"\(number(n.x+10))\" y=\"\(number(n.y+n.height*0.45))\" width=\"\(number(max(0,n.width-20)))\" height=\"\(number(max(0,n.height*0.45)))\" preserveAspectRatio=\"xMidYMid meet\"/>" } ?? ""
             let foldBadge = n.collapsed == true ? "<rect x=\"\(number(n.x+n.width-40))\" y=\"\(number(n.y+n.height-25))\" width=\"32\" height=\"18\" rx=\"9\" fill=\"#7A8BA8\"/><text x=\"\(number(n.x+n.width-24))\" y=\"\(number(n.y+n.height-12))\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"700\" fill=\"#ffffff\">+\(board.children(of: n.id).count)</text>" : ""
-            var iconGlyph = ""
-            var iconLabel = ""
-            if let raw = n.icon, let icon = NoteIcon(rawValue: raw) {
-                let g = NoteIcon.glyphSize(width: n.width, height: n.height)
-                let hasLabel = !n.text.isEmpty
-                let contentH = g + (hasLabel ? 6 + fontSize * 1.2 : 0)
-                let contentTop = n.y + (n.height - contentH) / 2
-                iconGlyph = "<g transform=\"translate(\(number(n.x + n.width / 2 - g / 2)) \(number(contentTop))) scale(\(number(g / NoteIcon.svgViewBox)))\"><path d=\"\(icon.svgPath)\" fill=\"none\" stroke=\"\(stroke)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></g>"
-                if hasLabel {
-                    iconLabel = "<clipPath id=\"note-clip-\(index)\"><rect x=\"\(number(n.x+8))\" y=\"\(number(n.y+4))\" width=\"\(number(max(0,n.width-16)))\" height=\"\(number(max(0,n.height-8)))\"/></clipPath>" +
-                        "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x + n.width / 2))\" y=\"\(number(contentTop + g + 6 + fontSize * 0.85))\" text-anchor=\"middle\" fill=\"\(labelFill)\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>"
-                }
-            }
             let card: String
             switch n.shape {
             case .line:
@@ -221,7 +208,7 @@ public enum BoardPDFHTML {
                 (n.shape == nil || n.shape == .text
                     ? "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+12))\" y=\"\(number(n.y+25))\" fill=\"\(labelFill)\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>"
                     : "<text clip-path=\"url(#note-clip-\(index))\" x=\"\(number(n.x+n.width/2))\" y=\"\(number(n.y+n.height/2+fontSize*0.35))\" text-anchor=\"middle\" fill=\"\(labelFill)\" font-size=\"\(number(fontSize))\" font-weight=\"600\">\(text)</text>")
-            return "\(card)\(iconGlyph)\(iconLabel.isEmpty ? label : iconLabel)\(image)\(foldBadge)"
+            return "\(card)\(label)\(image)\(foldBadge)"
         }.joined()
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(number(minX)) \(number(minY)) \(number(right-minX)) \(number(bottom-minY))\" role=\"img\" aria-label=\"Board overview\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 1 1 L 9 5 L 1 9\" fill=\"none\" stroke=\"#737d8e\" stroke-width=\"1.3\"/></marker></defs><g font-family=\"-apple-system, sans-serif\">\(background)\(groups)\(treeEdges)\(edges)\(cards)</g></svg>"
     }
