@@ -298,13 +298,12 @@ done
         }
         let controller = PiChatController()
         controller.start(options: PiChatStartOptions(boardID: "thinking-board", piPath: pi.path, extensionPath: ext.path, mcpPath: pi.path, home: dir))
-        for _ in 0..<100 where controller.phase != .ready || controller.thinkingLevel != "high" || controller.thinkingLevels != ["low", "medium", "high", "max"] { try await Task.sleep(nanoseconds: 20_000_000) }
+        // Readiness applies the model's fastest level by itself: thinking defaults to off.
+        for _ in 0..<100 where controller.phase != .ready || controller.thinkingLevel != "low" || controller.thinkingLevels != ["low", "medium", "high", "max"] { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.phase, .ready)
-        XCTAssertEqual(controller.thinkingLevel, "high")
-        XCTAssertTrue(controller.supportsThinking)
-        controller.setThinking(enabled: false)
-        for _ in 0..<100 where (try setLines()).count < 1 { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.thinkingLevel, "low")
+        XCTAssertTrue(controller.supportsThinking)
+        XCTAssertEqual(try setLines().count, 1)
         XCTAssertEqual(try setLines().last?.contains(#""level":"low""#), true)
         controller.setThinking(enabled: true)
         for _ in 0..<100 where (try setLines()).count < 2 || controller.thinkingLevel != "medium" { try await Task.sleep(nanoseconds: 20_000_000) }

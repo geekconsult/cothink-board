@@ -95,6 +95,7 @@ public final class PiChatController: ObservableObject {
     private var boardConflict: (messageID: UUID, refreshed: Bool)?
     private var readyPi = false
     private var historyRequested = false
+    private var appliedStartThinking = false
     private var startupTask: Task<Void, Never>?
     public init() {}
 
@@ -124,7 +125,7 @@ public final class PiChatController: ObservableObject {
             return
         }
         previousLease?.release()
-        messages = []; modelName = ""; availableModels = []; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false; thinkingLevel = ""; currentModelKey = ""; thinkingLevels = []
+        messages = []; modelName = ""; availableModels = []; bridgeReady = false; activityText = ""; readyPi = false; historyRequested = false; thinkingLevel = ""; currentModelKey = ""; thinkingLevels = []; appliedStartThinking = false
         contextUsage = ContextUsage(); currentSessionFile = ""
         guard FileManager.default.isExecutableFile(atPath: piPath) else { phase = .failed("Choose an executable Pi binary in chat settings."); return }
         guard FileManager.default.fileExists(atPath: extensionPath), FileManager.default.isExecutableFile(atPath: mcpPath) else { phase = .failed("CoThink's bundled Pi bridge or MCP server is missing. Rebuild the app."); return }
@@ -228,7 +229,7 @@ public final class PiChatController: ObservableObject {
         if let process, process.isRunning { process.terminate() }
         else { sessionLease?.release() }
         process = nil; sessionLease = nil; input = nil; stdout = nil; stderr = nil
-        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false; boardConflict = nil; thinkingLevel = ""; currentModelKey = ""; thinkingLevels = []
+        phase = .stopped; bridgeReady = false; activityText = ""; readyPi = false; boardConflict = nil; thinkingLevel = ""; currentModelKey = ""; thinkingLevels = []; appliedStartThinking = false
     }
     private func fail(_ message: String) {
         stop(); phase = .failed(message)
@@ -307,7 +308,15 @@ public final class PiChatController: ObservableObject {
                 let models = ((event["data"] as? [String: Any])?["models"] as? [[String: Any]] ?? []).compactMap(PiModel.init(modelDictionary:))
                 availableModels = models.sorted { ($0.provider, $0.name) < ($1.provider, $1.name) }
             } else if command == "get_available_thinking_levels" {
-                if let levels = (event["data"] as? [String: Any])?["levels"] as? [String] { thinkingLevels = levels }
+                if let levels = (event["data"] as? [String: Any])?["levels"] as? [String] {
+                    thinkingLevels = levels
+                    // Thinking defaults to off: every connect starts at the model's fastest level.
+                    if !appliedStartThinking {
+                        appliedStartThinking = true
+                        observeThinkingLevel(levels.first ?? "off")
+                        sendCommand(["id": UUID().uuidString, "type": "set_thinking_level", "level": levels.first ?? "off"])
+                    }
+                }
             } else if command == "set_model", let model = (event["data"] as? [String: Any]).flatMap(PiModel.init(modelDictionary:)) {
                 modelName = model.name
                 currentModelKey = model.key
