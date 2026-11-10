@@ -62,6 +62,13 @@ struct PiChatView: View {
         case .failed: return "Connection failed"
         }
     }
+    private var thinkingEnabled: Bool { !chat.thinkingLevel.isEmpty && chat.thinkingLevel != "off" }
+    private var thinkingToggleDisabled: Bool { !chat.canToggleThinking }
+    private var thinkingHelp: String {
+        thinkingEnabled
+            ? "Thinking: \(chat.thinkingLevel) — click to turn off for instant replies"
+            : "Thinking off — click to restore (\(chat.rememberedThinkingLevel))"
+    }
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -76,6 +83,12 @@ struct PiChatView: View {
                 }
                 Spacer()
                 ContextUsageBadge(usage: chat.contextUsage, conversationEstimate: conversationEstimate)
+                Button {
+                    chat.setThinking(enabled: !thinkingEnabled)
+                } label: { Image(systemName: "brain").foregroundStyle(thinkingEnabled ? Color.accentColor : Color.secondary) }
+                    .buttonStyle(.borderless).modifier(GlassControl()).help(thinkingHelp)
+                    .accessibilityLabel(thinkingHelp)
+                    .disabled(thinkingToggleDisabled)
                 Button {
                     withAnimation(.easeInOut(duration: 0.3)) { toggleVoiceMode() }
                 } label: { Image(systemName: "waveform") }
