@@ -42,11 +42,6 @@ func validateShapeFields(_ fields: [String: Any]) throws {
             throw ToolFailure(message: "Invalid lineFlipped — must be true or false, or null for the default diagonal")
         }
     }
-    if let icon = fields["icon"], !(icon is NSNull) {
-        guard let raw = icon as? String, NoteIcon(rawValue: raw) != nil else {
-            throw ToolFailure(message: "Invalid icon '\(icon)' — allowed: cloud, database, compute, network, users, or null (no icon)")
-        }
-    }
 }
 
 let stringSchema: [String: Any] = ["type": "string"]
@@ -73,7 +68,7 @@ let tools: [[String: Any]] = [
     tool("delete_board", "Delete a board and its history if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("replace_board", "Atomically replace an existing complete board. Provide its last observed revision to prevent overwriting concurrent edits.", ["board": objectSchema, "expected_revision": integerSchema], ["board", "expected_revision"]),
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
-    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Notes may have parentID, a tree parent note id; null clears it. Notes may also carry shape (rectangle, ellipse, diamond, line, text; null = text note), lineFlipped (line only; true = the top-right to bottom-left diagonal, absent = top-left to bottom-right) and icon (cloud, database, compute, network, users; null = no icon) for architecture-diagram objects. Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections and promotes its tree children to the nearest surviving ancestor.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
+    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Notes may have parentID, a tree parent note id; null clears it. Notes may also carry shape (rectangle, ellipse, diamond, line, text; null = text note) and lineFlipped (line only; true = the top-right to bottom-left diagonal, absent = top-left to bottom-right). Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections and promotes its tree children to the nearest surviving ancestor.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
     tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
     tool("export_board_pdf", "Export a snapshot of a board to an absolute local PDF path using the same HTML templates as the app. template is editorial, studio, or minimal. Set overwrite to true to replace an existing file. Requires a macOS graphical session and the bundled cothink-pdf helper. This writes to the local filesystem and is disabled in read-only mode.", ["board_id": stringSchema, "expected_revision": integerSchema, "destination_path": stringSchema, "template": ["type": "string", "enum": ["editorial", "studio", "minimal"]], "overwrite": ["type": "boolean"]], ["board_id", "expected_revision", "destination_path", "template"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
@@ -105,7 +100,7 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
             guard let item = operation["item"] as? [String: Any], let itemID = item["id"] as? String, !itemID.isEmpty else { throw ToolFailure(message: "add requires an item with nonempty id") }
             if collection == "notes", item["parent_id"] != nil || item["parentId"] != nil { throw ToolFailure(message: "Invalid key \(item["parent_id"] != nil ? "parent_id" : "parentId") for a note; the correct key is parentID") }
             if collection == "notes" { try validateShapeFields(item) }
-            else if let badKey = ["shape", "lineFlipped", "icon"].first(where: { item[$0] != nil }) { throw ToolFailure(message: "Invalid key \(badKey) for a \(collection); shape, lineFlipped and icon belong to notes") }
+            else if let badKey = ["shape", "lineFlipped"].first(where: { item[$0] != nil }) { throw ToolFailure(message: "Invalid key \(badKey) for a \(collection); shape and lineFlipped belong to notes") }
             guard !items.contains(where: { ($0["id"] as? String) == itemID }) else { throw ToolFailure(message: "Item already exists: \(itemID)") }
             items.append(item)
         case "update":
@@ -113,7 +108,7 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
             guard let index = items.firstIndex(where: { ($0["id"] as? String) == itemID }), var fields = operation["fields"] as? [String: Any], fields["id"] == nil else { throw ToolFailure(message: "update requires an existing id and fields without id") }
             if collection == "notes", fields["parent_id"] != nil || fields["parentId"] != nil { throw ToolFailure(message: "Invalid key \(fields["parent_id"] != nil ? "parent_id" : "parentId") for a note; the correct key is parentID") }
             if collection == "notes" { try validateShapeFields(fields) }
-            else if let badKey = ["shape", "lineFlipped", "icon"].first(where: { fields[$0] != nil }) { throw ToolFailure(message: "Invalid key \(badKey) for a \(collection); shape, lineFlipped and icon belong to notes") }
+            else if let badKey = ["shape", "lineFlipped"].first(where: { fields[$0] != nil }) { throw ToolFailure(message: "Invalid key \(badKey) for a \(collection); shape and lineFlipped belong to notes") }
             if (collection == "groups" || collection == "notes"), fields["x"] != nil || fields["y"] != nil {
                 for key in ["x", "y"] {
                     if let value = fields[key] {
@@ -285,7 +280,6 @@ func boardContext(_ board: Board) -> [String: Any] {
             "has_legacy_image": note.imagePath != nil
         ]
         if let shape = note.shape { entry["shape"] = shape.rawValue }
-        if let icon = note.icon { entry["icon"] = icon }
         if note.lineFlipped == true { entry["lineFlipped"] = true }
         return entry
     }
