@@ -76,7 +76,7 @@ struct CoThinkApp: App {
                 Button("Export Board…") { model.exportBoard() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(model.board == nil || model.homeVisible)
                 Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil || model.homeVisible)
             }
-            CommandGroup(after: .undoRedo) {
+            CommandGroup(replacing: .undoRedo) {
                 Button("Undo Board Change") { model.undo() }
                     .keyboardShortcut("z", modifiers: .command).disabled(model.homeVisible)
                 Button("Redo Board Change") { model.redo() }
