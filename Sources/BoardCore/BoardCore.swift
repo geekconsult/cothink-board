@@ -9,6 +9,46 @@ public enum NoteShape: String, Codable, CaseIterable {
     case rectangle, ellipse, diamond, line, text
 }
 
+/// Architecture-diagram icon objects a note can carry, rendered as a stroke glyph in a 24×24 box.
+public enum NoteIcon: String, Codable, CaseIterable, Sendable {
+    case cloud, database, compute, network, users
+
+    public var displayName: String {
+        switch self {
+        case .cloud: return "Cloud"
+        case .database: return "Database"
+        case .compute: return "Compute"
+        case .network: return "Network"
+        case .users: return "Users"
+        }
+    }
+
+    /// Stroke path data in the 24×24 view box; the only geometry source for canvas, PDF and capture.
+    public var svgPath: String {
+        switch self {
+        case .cloud: return "M18 10h-1.26A8 8 0 1 0 9 20h9a4 4 0 0 0 0-8z"
+        case .database: return "M3 5a9 3 0 1 0 18 0a9 3 0 1 0-18 0M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0"
+        case .compute: return "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 9h6v6H9ZM9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"
+        case .network: return "M15 5a3 3 0 1 0 6 0a3 3 0 1 0-6 0M3 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M15 19a3 3 0 1 0 6 0a3 3 0 1 0-6 0M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"
+        case .users: return "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"
+        }
+    }
+
+    public static let svgViewBox = 24.0
+    public static let svgStrokeWidth = 2.0
+
+    /// Shared glyph sizing so the canvas, PDF and capture render the icon identically.
+    public static func glyphSize(width: Double, height: Double) -> Double {
+        max(22, min(min(width, height) * 0.52, min(width, height) - 40))
+    }
+
+    /// Geometry as parsed vector commands with arcs flattened to cubic curves.
+    public var geometry: [NoteIconCommand] {
+        var parser = SVGPathParser(svgPath)
+        return parser.parseCommands()
+    }
+}
+
 public enum ConnectionDirection: String, Codable, CaseIterable {
     case oneWay, twoWay, none
 }
@@ -65,17 +105,19 @@ public struct Note: Codable, Identifiable, Equatable {
     public var strokeStyle: LineStyle?
     public var shape: NoteShape?
     public var lineFlipped: Bool?
+    public var icon: String?
     public var imagePath: String?
     public var assetIDs: [String]?
     public var parentID: String?
     public var collapsed: Bool?
-    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil, collapsed: Bool? = nil, shape: NoteShape? = nil) {
+    public init(id: String = UUID().uuidString, text: String = "", x: Double = 100, y: Double = 100, width: Double = 200, height: Double = 100, color: String = "#FFF1B8", imagePath: String? = nil, parentID: String? = nil, collapsed: Bool? = nil, shape: NoteShape? = nil, icon: String? = nil) {
         self.id = id; self.text = text; self.x = x; self.y = y; self.width = width; self.height = height; self.color = color
         self.imagePath = imagePath
         self.assetIDs = []
         self.parentID = parentID
         self.collapsed = collapsed
         self.shape = shape
+        self.icon = icon
     }
 
     public static func makeShape(_ shape: NoteShape, x: Double, y: Double, width: Double? = nil, height: Double? = nil, flipped: Bool = false) -> Note {
@@ -84,12 +126,18 @@ public struct Note: Codable, Identifiable, Equatable {
         return note
     }
 
-    public var autofitsHeight: Bool { shape == nil || shape == .text }
+    public static func makeIcon(_ icon: NoteIcon, x: Double, y: Double, width: Double? = nil, height: Double? = nil) -> Note {
+        var note = Note(text: "", x: x, y: y, width: width ?? 160, height: height ?? 120, color: "#F3F1EC")
+        note.icon = icon.rawValue
+        return note
+    }
 
     // A line is the diagonal of its bounding box, so a zero extent is legitimate for line notes only.
     public var hasValidExtent: Bool {
         shape == .line ? width > 0 || height > 0 : width > 0 && height > 0
     }
+
+    public var autofitsHeight: Bool { icon == nil && (shape == nil || shape == .text) }
 
     public var extentMinWidth: Double { shape == .line ? 1 : 80 }
     public var extentMinHeight: Double { shape == .line ? 1 : 50 }

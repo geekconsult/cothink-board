@@ -871,3 +871,86 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertFalse(folded.contains("M 200.00 40.00 L 300.00 40.00"))
     }
 }
+
+@MainActor
+final class NoteIconTests: XCTestCase {
+    func testIconCatalogHasExactlyFiveCases() {
+        XCTAssertEqual(NoteIcon.allCases, [.cloud, .database, .compute, .network, .users])
+    }
+
+    func testMakeIconDefaultsAndGlyphSizeBounds() {
+        let note = Note.makeIcon(.cloud, x: 10, y: 20)
+        XCTAssertEqual(note.icon, "cloud")
+        XCTAssertEqual(note.width, 160)
+        XCTAssertEqual(note.height, 120)
+        XCTAssertFalse(note.autofitsHeight)
+        XCTAssertEqual(NoteIcon.glyphSize(width: 160, height: 120), min(120 * 0.52, 120 - 40), accuracy: 0.001)
+        XCTAssertEqual(NoteIcon.glyphSize(width: 80, height: 50), 22, accuracy: 0.001)
+    }
+
+    func testIconRoundTripsThroughJSON() throws {
+        var note = Note.makeIcon(.database, x: 5, y: 5)
+        note.text = "Primary DB"
+        let data = try JSONEncoder().encode([note])
+        let decoded = try JSONDecoder().decode([Note].self, from: data)
+        XCTAssertEqual(decoded.first?.icon, "database")
+        XCTAssertEqual(decoded.first?.text, "Primary DB")
+    }
+
+    func testEveryIconParsesInsideItsTwentyFourUnitBox() {
+        for icon in NoteIcon.allCases {
+            let commands = icon.geometry
+            XCTAssertFalse(commands.isEmpty, "\(icon.rawValue) produced no geometry")
+            var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude
+            var maxX = -Double.greatestFiniteMagnitude, maxY = -Double.greatestFiniteMagnitude
+            for command in commands {
+                let points = Self.points(of: command)
+                for (x, y) in points {
+                    minX = min(minX, x); maxX = max(maxX, x)
+                    minY = min(minY, y); maxY = max(maxY, y)
+                }
+            }
+            XCTAssertGreaterThanOrEqual(minX, -0.01, "\(icon.rawValue)")
+            XCTAssertLessThanOrEqual(maxX, 24.01, "\(icon.rawValue)")
+            XCTAssertGreaterThanOrEqual(minY, -0.01, "\(icon.rawValue)")
+            XCTAssertLessThanOrEqual(maxY, 24.01, "\(icon.rawValue)")
+        }
+    }
+
+
+    private static func points(of command: NoteIconCommand) -> [(Double, Double)] {
+        switch command {
+        case .moveTo(let x, let y): return [(x, y)]
+        case .lineTo(let x, let y): return [(x, y)]
+        case .curve(let x1, let y1, let x2, let y2, let x, let y): return [(x1, y1), (x2, y2), (x, y)]
+        case .quad(let x1, let y1, let x, let y): return [(x1, y1), (x, y)]
+        case .close: return []
+        }
+    }
+
+    func testDatabaseArcGeometryMatchesExpectedBounds() {
+        let commands = NoteIcon.database.geometry
+        let points = commands.flatMap { command -> [(Double, Double)] in
+            switch command {
+            case .moveTo(let x, let y): return [(x, y)]
+            case .lineTo(let x, let y): return [(x, y)]
+            case .curve(let x1, let y1, let x2, let y2, let x, let y): return [(x1, y1), (x2, y2), (x, y)]
+            case .quad(let x1, let y1, let x, let y): return [(x1, y1), (x, y)]
+            case .close: return []
+            }
+        }
+        let xs = points.map { $0.0 }, ys = points.map { $0.1 }
+        XCTAssertEqual(xs.min() ?? 0, 3, accuracy: 0.05)
+        XCTAssertEqual(xs.max() ?? 0, 21, accuracy: 0.05)
+        XCTAssertEqual(ys.min() ?? 0, 2, accuracy: 0.05)
+        XCTAssertEqual(ys.max() ?? 0, 22, accuracy: 0.05)
+    }
+
+    func testParserHandlesRelativeAndFlagPacking() {
+        var parser = SVGPathParser("M3 5a9 3 0 0 0-4-4L10 6z")
+        let commands = parser.parseCommands()
+        XCTAssertTrue(commands.contains { if case .curve = $0 { return true }; return false })
+        XCTAssertTrue(commands.contains { if case .lineTo = $0 { return true }; return false })
+        XCTAssertTrue(commands.contains { if case .close = $0 { return true }; return false })
+    }
+}
