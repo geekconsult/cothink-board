@@ -62,12 +62,12 @@ struct PiChatView: View {
         case .failed: return "Connection failed"
         }
     }
-    private var thinkingEnabled: Bool { !chat.thinkingLevel.isEmpty && chat.thinkingLevel != "off" }
+    private var thinkingEnabled: Bool { chat.thinkingEnabled }
     private var thinkingToggleDisabled: Bool { !chat.canToggleThinking }
     private var thinkingHelp: String {
         thinkingEnabled
-            ? "Thinking: \(chat.thinkingLevel) — click to turn off for instant replies"
-            : "Thinking off — click to restore (\(chat.rememberedThinkingLevel))"
+            ? "Thinking: \(chat.thinkingLevel) — click for fast replies (\(chat.fastThinkingLevel))"
+            : "Fast replies (\(chat.thinkingLevel)) — click to restore (\(chat.rememberedThinkingLevel))"
     }
     var body: some View {
         ZStack {

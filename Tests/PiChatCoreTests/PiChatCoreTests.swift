@@ -256,7 +256,7 @@ done
     }
 
     @MainActor
-    func testThinkingToggleSendsOffAndRestoresRememberedLevel() async throws {
+    func testThinkingToggleSendsFastestLevelAndRestoresRememberedLevel() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -271,12 +271,16 @@ while IFS= read -r line; do
     printf '%s\n' '{"type":"response","command":"get_state","success":true,"data":{"thinkingLevel":"high","model":{"id":"glm-x","name":"GLM X","provider":"zai"}}}'
   elif [[ "$line" == *'get_available_models'* ]]; then
     printf '%s\n' '{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"glm-x","name":"GLM X","provider":"zai","reasoning":true}]}}'
+  elif [[ "$line" == *'get_available_thinking_levels'* ]]; then
+    printf '%s\n' '{"type":"response","command":"get_available_thinking_levels","success":true,"data":{"levels":["low","medium","high","max"]}}'
   elif [[ "$line" == *'get_messages'* ]]; then
     printf '%s\n' '{"type":"response","command":"get_messages","success":true,"data":{"messages":[]}}'
   elif [[ "$line" == *'set_thinking_level'* ]]; then
     level=$(printf '%s' "$line" | sed -E 's/.*"level":"([^"]+)".*/\1/')
     if [[ "$level" == "high" ]]; then settled="medium"; else settled="$level"; fi
     printf '%s\n' '{"type":"response","command":"set_thinking_level","success":true}' '{"type":"thinking_level_changed","level":"'$settled'"}'
+  elif [[ "$line" == *'cannot-disable'* ]]; then
+    printf '%s\n' '{"type":"response","command":"prompt","success":true}' '{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"400 This model always engages in thinking and cannot be disabled; please use low, high, or max"}}' '{"type":"agent_end"}'
   fi
 done
 """#
@@ -288,27 +292,34 @@ done
         }
         let controller = PiChatController()
         controller.start(options: PiChatStartOptions(boardID: "thinking-board", piPath: pi.path, extensionPath: ext.path, mcpPath: pi.path, home: dir))
-        for _ in 0..<100 where controller.phase != .ready || controller.thinkingLevel != "high" || !controller.supportsThinking { try await Task.sleep(nanoseconds: 20_000_000) }
+        for _ in 0..<100 where controller.phase != .ready || controller.thinkingLevel != "high" || controller.thinkingLevels != ["low", "medium", "high", "max"] { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.phase, .ready)
         XCTAssertEqual(controller.thinkingLevel, "high")
         XCTAssertTrue(controller.supportsThinking)
         controller.setThinking(enabled: false)
         for _ in 0..<100 where (try setLines()).count < 1 { try await Task.sleep(nanoseconds: 20_000_000) }
-        XCTAssertEqual(controller.thinkingLevel, "off")
-        XCTAssertEqual(try setLines().last?.contains(#""level":"off""#), true)
+        XCTAssertEqual(controller.thinkingLevel, "low")
+        XCTAssertEqual(try setLines().last?.contains(#""level":"low""#), true)
         controller.setThinking(enabled: true)
         for _ in 0..<100 where (try setLines()).count < 2 || controller.thinkingLevel != "medium" { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.thinkingLevel, "medium")
         XCTAssertEqual(try setLines().last?.contains(#""level":"high""#), true)
         controller.setThinking(enabled: false)
         for _ in 0..<100 where (try setLines()).count < 3 { try await Task.sleep(nanoseconds: 20_000_000) }
-        XCTAssertEqual(controller.thinkingLevel, "off")
+        XCTAssertEqual(controller.thinkingLevel, "low")
         controller.setThinking(enabled: true)
         for _ in 0..<100 where (try setLines()).count < 4 || controller.thinkingLevel != "medium" { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(controller.thinkingLevel, "medium")
-        let sentLevels = try setLines()
+        var sentLevels = try setLines()
         XCTAssertEqual(sentLevels.count, 4)
         XCTAssertEqual(sentLevels.last?.contains(#""level":"medium""#), true)
+        controller.send("cannot-disable")
+        for _ in 0..<100 where (try setLines()).count < 5 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(controller.thinkingLevel, "low")
+        XCTAssertTrue(controller.messages.contains { $0.role == .activity && $0.text.contains("always thinks") && $0.text.contains("low") })
+        sentLevels = try setLines()
+        XCTAssertEqual(sentLevels.count, 5)
+        XCTAssertEqual(sentLevels.last?.contains(#""level":"low""#), true)
         controller.stop()
     }
     @MainActor
