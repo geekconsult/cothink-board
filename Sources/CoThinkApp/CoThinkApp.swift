@@ -77,14 +77,10 @@ struct CoThinkApp: App {
                 Button("Export Board as PDF…") { NotificationCenter.default.post(name: .exportPDFCommand, object: nil) }.disabled(model.board == nil || model.homeVisible)
             }
             CommandGroup(after: .undoRedo) {
-                Button("Undo Board Change") {
-                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { textView.undoManager?.undo() }
-                    else { model.undo() }
-                }.keyboardShortcut("z", modifiers: .command).disabled(model.homeVisible)
-                Button("Redo Board Change") {
-                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { textView.undoManager?.redo() }
-                    else { model.redo() }
-                }.keyboardShortcut("z", modifiers: [.command, .shift]).disabled(model.homeVisible)
+                Button("Undo Board Change") { model.undo() }
+                    .keyboardShortcut("z", modifiers: .command).disabled(model.homeVisible)
+                Button("Redo Board Change") { model.redo() }
+                    .keyboardShortcut("y", modifiers: .command).disabled(model.homeVisible)
             }
             CommandGroup(replacing: .pasteboard) {
                 let editingText = NSApp.keyWindow?.firstResponder is NSTextView
@@ -1523,7 +1519,6 @@ struct WorkspaceView: View {
             }
             if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "c", model.hasSelection { model.copySelection(); return true }
             if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v", model.canPaste { model.pasteSelection(); return true }
-            if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "y" { model.redo(); return true }
             return false
         })
         .onKeyPress(.delete) {
