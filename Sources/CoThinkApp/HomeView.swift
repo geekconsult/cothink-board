@@ -1,6 +1,24 @@
 import SwiftUI
 import BoardCore
 
+enum HomeBoardScope: Hashable {
+    case all
+    case list(id: String)
+
+    func boards(_ boards: [Board], lists: [BoardList], search: String) -> [Board] {
+        boards.filter { board in
+            if case .list(let id) = self {
+                let memberIDs = lists.first(where: { $0.id == id })?.boardIDs ?? []
+                if !memberIDs.contains(board.id) { return false }
+            }
+            return search.isEmpty
+                || board.title.localizedCaseInsensitiveContains(search)
+                || (board.tags ?? []).contains { $0.localizedCaseInsensitiveContains(search) }
+                || board.notes.contains { $0.text.localizedCaseInsensitiveContains(search) }
+        }
+    }
+}
+
 /// App home screen: every board as a card in a paged grid, 12 boards per page.
 struct HomeView: View {
     static let pageSize = 12
@@ -13,14 +31,25 @@ struct HomeView: View {
     @State private var page = 0
     @State private var boardToDelete: Board?
     @State private var settingsBoard: Board?
+    @State private var scope: HomeBoardScope = .all
+
+    private var effectiveScope: HomeBoardScope {
+        if case .list(let id) = scope, !model.boardLists.contains(where: { $0.id == id }) { return .all }
+        return scope
+    }
+
+    private var selectedList: BoardList? {
+        guard case .list(let id) = effectiveScope else { return nil }
+        return model.boardLists.first { $0.id == id }
+    }
+
+    private var sectionSubtitle: String {
+        if !search.isEmpty { return "Boards, tags, and notes matching your search." }
+        return selectedList == nil ? "A space for every idea." : "Boards in this list."
+    }
 
     private var filteredBoards: [Board] {
-        model.boards.filter { board in
-            search.isEmpty
-                || board.title.localizedCaseInsensitiveContains(search)
-                || (board.tags ?? []).contains { $0.localizedCaseInsensitiveContains(search) }
-                || board.notes.contains { $0.text.localizedCaseInsensitiveContains(search) }
-        }
+        effectiveScope.boards(model.boards, lists: model.boardLists, search: search)
     }
 
     private var pageCount: Int { max(1, (filteredBoards.count + Self.pageSize - 1) / Self.pageSize) }
@@ -36,16 +65,23 @@ struct HomeView: View {
                     if model.boards.isEmpty {
                         emptyState
                     } else if filteredBoards.isEmpty {
-                        noResults
+                        if search.isEmpty, case .list = effectiveScope {
+                            emptyListState
+                        } else {
+                            noResults
+                        }
                     } else {
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(search.isEmpty ? "Your boards" : "Search results")
+                                Text(search.isEmpty ? (selectedList?.title ?? "Your boards") : "Search results")
                                     .font(.title2.weight(.semibold))
-                                Text(search.isEmpty ? "A space for every idea." : "Boards, tags, and notes matching your search.")
+                                Text(sectionSubtitle)
                                     .font(.callout).foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if !model.boardLists.isEmpty {
+                                BoardScopePicker(lists: model.boardLists, scope: effectiveScope) { scope = $0 }
+                            }
                             Text("\(filteredBoards.count) \(filteredBoards.count == 1 ? "board" : "boards")")
                                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         }
@@ -75,7 +111,7 @@ struct HomeView: View {
                                         Button("Delete Board…", role: .destructive) { boardToDelete = board }
                                     }
                             }
-                            if search.isEmpty { NewBoardCard(action: onNewBoard) }
+                            if search.isEmpty && effectiveScope == .all { NewBoardCard(action: onNewBoard) }
                         }
                     }
                 }
@@ -103,6 +139,7 @@ struct HomeView: View {
             BoardSettingsView(model: model, board: board).frame(width: 450)
         }
         .onChange(of: search) { _, _ in page = 0 }
+        .onChange(of: effectiveScope) { _, _ in page = 0 }
     }
 
     private var header: some View {
@@ -192,6 +229,18 @@ struct HomeView: View {
         .frame(maxWidth: .infinity).padding(.vertical, 80)
     }
 
+    private var emptyListState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "folder").font(.system(size: 26)).foregroundStyle(.secondary)
+            Text("No boards in this list").font(.title3.weight(.semibold))
+            Text("Drag boards onto this list in the sidebar to collect them here.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("Show All Boards") { scope = .all }
+                .buttonStyle(.borderedProminent).padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 80)
+    }
+
     private var pageBar: some View {
         HStack(spacing: 14) {
             Text("\(filteredBoards.count) boards").font(.caption).foregroundStyle(.secondary)
@@ -210,6 +259,26 @@ struct HomeView: View {
             Spacer()
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
+    }
+}
+
+/// Isolated so the menu picker survives Home re-renders from the 1Hz board poll.
+private struct BoardScopePicker: View {
+    let lists: [BoardList]
+    let scope: HomeBoardScope
+    let onSelect: (HomeBoardScope) -> Void
+
+    var body: some View {
+        Picker("Filter boards", selection: Binding(get: { scope }, set: { onSelect($0) })) {
+            Text("All Boards").tag(HomeBoardScope.all)
+            ForEach(lists) { list in
+                Label(list.title, systemImage: "folder").tag(HomeBoardScope.list(id: list.id))
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityLabel("Filter boards by list")
     }
 }
 
