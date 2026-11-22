@@ -292,6 +292,27 @@ final class BoardCoreTests: XCTestCase {
         XCTAssertEqual(try reopened.list().map(\.title), ["c"])
         XCTAssertEqual(try reopened.lists().first?.boardIDs, [ids[2]])
     }
+    func testMarkOpenedPersistsWithoutTouchingBoardState() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = try BoardStore(directory: dir)
+        let a = try store.create(title: "a", actor: "user")
+        let b = try store.create(title: "b", actor: "user")
+        let revisionBefore = a.revision
+        let historyCountBefore = try store.history(a.id).count
+        try store.markOpened(a.id)
+        XCTAssertNotNil(try store.pollSnapshot(currentBoardID: nil).lastOpened[a.id])
+        XCTAssertNil(try store.pollSnapshot(currentBoardID: nil).lastOpened[b.id])
+        let reopened = try BoardStore(directory: dir)
+        XCTAssertNotNil(try reopened.pollSnapshot(currentBoardID: nil).lastOpened[a.id])
+        XCTAssertNil(try reopened.pollSnapshot(currentBoardID: nil).lastOpened[b.id])
+        XCTAssertEqual(try store.get(a.id).revision, revisionBefore)
+        XCTAssertEqual(try store.history(a.id).count, historyCountBefore)
+        XCTAssertThrowsError(try store.markOpened("ghost")) { error in
+            guard case BoardError.notFound = error else { return XCTFail("expected BoardError.notFound, got \(error)") }
+        }
+        try store.delete(a.id, expectedRevision: revisionBefore)
+        XCTAssertNil(try store.pollSnapshot(currentBoardID: nil).lastOpened[a.id])
+    }
     func testBoardTitleDraftDistinguishesNoEditFromRealConflict() {
         XCTAssertEqual(BoardTitleDraft.decision(baseline: "Alpha", draft: "Alpha", current: "Beta"), .unchanged)
         XCTAssertEqual(BoardTitleDraft.decision(baseline: "Alpha", draft: "My edit", current: "Beta"), .conflict)

@@ -125,6 +125,7 @@ final class BoardViewModel: ObservableObject {
     private var pasteCount = 0
     @Published var boards: [Board] = []
     @Published var boardLists: [BoardList] = []
+    @Published var lastOpened: [String: Date] = [:]
     @Published var history: [Change] = []
     @Published var draftBlocked = false
     @Published var board: Board?
@@ -171,6 +172,7 @@ final class BoardViewModel: ObservableObject {
         if snapshot.boards != boards { boards = snapshot.boards }
         if snapshot.lists != boardLists { boardLists = snapshot.lists }
         if snapshot.history != history { history = snapshot.history }
+        if snapshot.lastOpened != lastOpened { lastOpened = snapshot.lastOpened }
         if snapshot.board?.revision != board?.revision {
             board = snapshot.board
             if snapshot.board == nil { clearSelection() }
@@ -191,7 +193,7 @@ final class BoardViewModel: ObservableObject {
     func selectBoard(_ id: String) {
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
         guard !draftBlocked else { return }
-        do { board = try store?.get(id); history = try store?.history(id) ?? []; clearSelection() }
+        do { board = try store?.get(id); try? store?.markOpened(id); history = try store?.history(id) ?? []; clearSelection() }
         catch { self.error = error.localizedDescription }
     }
 
@@ -1203,7 +1205,7 @@ struct WorkspaceView: View {
                 .keyboardShortcut("h", modifiers: [.command, .shift])
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(board.map { $0.title.isEmpty ? "Untitled board" : $0.title } ?? "CoThink Board")
+                Text(board.map(\.displayTitle) ?? "CoThink Board")
                     .font(.headline).lineLimit(1)
                 if case .select = tool {
                     toolStatusRow("Drag to select · Esc to cancel")

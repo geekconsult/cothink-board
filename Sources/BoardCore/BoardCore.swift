@@ -159,6 +159,8 @@ public struct Board: Codable, Identifiable, Equatable {
         self.version = version; self.id = id; self.title = title; self.revision = revision; self.notes = notes; self.connections = connections; self.groups = groups
         self.projectFilesPath = projectFilesPath; self.assets = assets
     }
+
+    public var displayTitle: String { title.isEmpty ? "Untitled board" : title }
 }
 
 public struct BoardFragment: Codable {
@@ -590,12 +592,13 @@ public struct BoardList: Codable, Identifiable, Equatable {
     public var color: String = "#7A8BA8"
     public init(title: String) { self.title = title }
 }
-private struct Database: Codable { var entries: [Entry] = []; var lists: [BoardList]? = nil }
+private struct Database: Codable { var entries: [Entry] = []; var lists: [BoardList]? = nil; var lastOpened: [String: Date]? = nil }
 public struct PollSnapshot: Equatable {
     public var boards: [Board]
     public var lists: [BoardList]
     public var board: Board?
     public var history: [Change]
+    public var lastOpened: [String: Date] = [:]
 }
 
 public final class BoardStore {
@@ -673,7 +676,15 @@ public final class BoardStore {
     public func pollSnapshot(currentBoardID: String?) throws -> PollSnapshot {
         try transact { db in
             let current = db.entries.first(where: { $0.board.id == currentBoardID })
-            return PollSnapshot(boards: db.entries.map(\.board), lists: db.lists ?? [], board: current?.board, history: current?.history ?? [])
+            return PollSnapshot(boards: db.entries.map(\.board), lists: db.lists ?? [], board: current?.board, history: current?.history ?? [], lastOpened: db.lastOpened ?? [:])
+        }
+    }
+    public func markOpened(_ id: String) throws {
+        try transact(write: true) { db in
+            guard db.entries.contains(where: { $0.board.id == id }) else { throw BoardError.notFound }
+            var opened = db.lastOpened ?? [:]
+            opened[id] = Date()
+            db.lastOpened = opened
         }
     }
     public func create(title: String, actor: String) throws -> Board {
@@ -699,7 +710,7 @@ public final class BoardStore {
             return next
         }
     }
-    public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i); if var lists = db.lists { for index in lists.indices where lists[index].boardIDs.contains(id) { lists[index].boardIDs.removeAll { $0 == id }; lists[index].revision += 1 }; db.lists = lists } } }
+    public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i); if var lists = db.lists { for index in lists.indices where lists[index].boardIDs.contains(id) { lists[index].boardIDs.removeAll { $0 == id }; lists[index].revision += 1 }; db.lists = lists }; if var opened = db.lastOpened { opened.removeValue(forKey: id); db.lastOpened = opened } } }
     public func move(boardID: String, to anchor: BoardAnchor) throws {
         try transact(write: true) { db in
             guard let from = db.entries.firstIndex(where: { $0.board.id == boardID }) else { throw BoardError.notFound }
@@ -729,6 +740,7 @@ public final class BoardStore {
                 }
                 db.lists = lists
             }
+            if var opened = db.lastOpened { opened = opened.filter { !doomed.contains($0.key) }; db.lastOpened = opened }
         }
     }
     public func undo(_ id: String, actor: String, expectedRevision: Int? = nil) throws -> Board { try travel(id, actor: actor, backwards: true, expectedRevision: expectedRevision) }

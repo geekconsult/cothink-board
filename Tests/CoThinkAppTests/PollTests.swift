@@ -35,4 +35,15 @@ final class PollTests: XCTestCase {
         XCTAssertEqual(model.board?.title, "Renamed elsewhere", "a settled poll keeps the external change")
         subscription.cancel()
     }
+
+    @MainActor
+    func testSelectBoardRecordsLastOpened() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("cothink-poll-tests-\(UUID().uuidString)", isDirectory: true)
+        let model = BoardViewModel(storeDirectory: home)
+        let board = try XCTUnwrap(model.board)
+        XCTAssertNil(model.lastOpened[board.id])
+        model.selectBoard(board.id)
+        try model.refresh()
+        XCTAssertNotNil(model.lastOpened[board.id])
+    }
 }
