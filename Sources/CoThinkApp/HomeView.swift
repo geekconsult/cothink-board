@@ -19,19 +19,44 @@ enum HomeBoardScope: Hashable {
     }
 }
 
-/// App home screen: every board as a card in a paged grid, 12 boards per page.
-struct HomeView: View {
-    static let pageSize = 12
+enum HomeSort: String, CaseIterable {
+    case recent, title
 
+    var label: String { self == .recent ? "Recent" : "Title" }
+
+    func sorted(_ boards: [Board], lastOpened: [String: Date]) -> [Board] {
+        switch self {
+        case .recent:
+            return boards.enumerated().sorted { lhs, rhs in
+                switch (lastOpened[lhs.element.id], lastOpened[rhs.element.id]) {
+                case let (l?, r?): return l > r
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return lhs.offset < rhs.offset
+                }
+            }.map(\.element)
+        case .title:
+            return boards.sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
+        }
+    }
+}
+
+struct HomeView: View {
     @ObservedObject var model: BoardViewModel
     @Binding var search: String
     let onOpenBoard: (String) -> Void
     let onNewBoard: () -> Void
 
-    @State private var page = 0
+    @AppStorage("homeSort") private var sortRaw = HomeSort.recent.rawValue
+    @AppStorage("homeCompactGrid") private var compactGrid = false
     @State private var boardToDelete: Board?
     @State private var settingsBoard: Board?
     @State private var scope: HomeBoardScope = .all
+
+    private var sort: HomeSort {
+        get { HomeSort(rawValue: sortRaw) ?? .recent }
+        nonmutating set { sortRaw = newValue.rawValue }
+    }
 
     private var effectiveScope: HomeBoardScope {
         if case .list(let id) = scope, !model.boardLists.contains(where: { $0.id == id }) { return .all }
@@ -49,17 +74,14 @@ struct HomeView: View {
     }
 
     private var filteredBoards: [Board] {
-        effectiveScope.boards(model.boards, lists: model.boardLists, search: search)
+        sort.sorted(effectiveScope.boards(model.boards, lists: model.boardLists, search: search), lastOpened: model.lastOpened)
     }
-
-    private var pageCount: Int { max(1, (filteredBoards.count + Self.pageSize - 1) / Self.pageSize) }
-    private var currentPage: Int { min(page, pageCount - 1) }
-    private var pageBoards: [Board] { Array(filteredBoards.dropFirst(currentPage * Self.pageSize).prefix(Self.pageSize)) }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.5)
+            scopeToolbar
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     if model.boards.isEmpty {
@@ -79,14 +101,14 @@ struct HomeView: View {
                                     .font(.callout).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if !model.boardLists.isEmpty {
-                                BoardScopePicker(lists: model.boardLists, scope: effectiveScope) { scope = $0 }
-                            }
                             Text("\(filteredBoards.count) \(filteredBoards.count == 1 ? "board" : "boards")")
                                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         }
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 205, maximum: 320), spacing: 16, alignment: .top)], spacing: 16) {
-                            ForEach(pageBoards) { board in
+                        if search.isEmpty && effectiveScope == .all && !recentBoards.isEmpty {
+                            recentlyOpened
+                        }
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: compactGrid ? 150 : 205, maximum: compactGrid ? 240 : 320), spacing: 16, alignment: .top)], spacing: 16) {
+                            ForEach(filteredBoards) { board in
                                 BoardCard(board: board, isCurrent: model.board?.id == board.id) { onOpenBoard(board.id) }
                                     .overlay(alignment: .topTrailing) {
                                         Menu {
@@ -100,8 +122,8 @@ struct HomeView: View {
                                                 .background(.regularMaterial, in: Circle())
                                         }
                                         .menuStyle(.borderlessButton).fixedSize()
-                                        .help("Actions for \(board.title.isEmpty ? "Untitled board" : board.title)")
-                                        .accessibilityLabel("Actions for \(board.title.isEmpty ? "Untitled board" : board.title)")
+                                        .help("Actions for \(board.displayTitle)")
+                                        .accessibilityLabel("Actions for \(board.displayTitle)")
                                         .padding(10)
                                     }
                                     .contextMenu {
@@ -119,10 +141,6 @@ struct HomeView: View {
                 .padding(.horizontal, 28).padding(.vertical, 28)
                 .frame(maxWidth: .infinity, alignment: .top)
             }
-            if pageCount > 1 {
-                Divider().opacity(0.5)
-                pageBar
-            }
         }
         .confirmationDialog("Delete this board?", isPresented: Binding(get: { boardToDelete != nil }, set: { if !$0 { boardToDelete = nil } }), titleVisibility: .visible) {
             Button("Delete Board", role: .destructive) {
@@ -132,14 +150,12 @@ struct HomeView: View {
             Button("Cancel", role: .cancel) { boardToDelete = nil }
         } message: {
             if let board = boardToDelete {
-                Text("“\(board.title.isEmpty ? "Untitled board" : board.title)” and its history will be removed from this Mac.")
+                Text("“\(board.displayTitle)” and its history will be removed from this Mac.")
             }
         }
         .sheet(item: $settingsBoard) { board in
             BoardSettingsView(model: model, board: board).frame(width: 450)
         }
-        .onChange(of: search) { _, _ in page = 0 }
-        .onChange(of: effectiveScope) { _, _ in page = 0 }
     }
 
     private var header: some View {
@@ -241,44 +257,132 @@ struct HomeView: View {
         .frame(maxWidth: .infinity).padding(.vertical, 80)
     }
 
-    private var pageBar: some View {
-        HStack(spacing: 14) {
-            Text("\(filteredBoards.count) boards").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button { page = currentPage - 1 } label: { Image(systemName: "chevron.left").frame(width: 16, height: 16) }
-                .buttonStyle(.plain).modifier(GlassControl())
-                .disabled(currentPage == 0).help("Previous page")
-                .accessibilityLabel("Previous page")
-            Text("Page \(currentPage + 1) of \(pageCount)")
-                .font(.callout.monospacedDigit()).frame(minWidth: 96)
-                .accessibilityLabel("Page \(currentPage + 1) of \(pageCount)")
-            Button { page = currentPage + 1 } label: { Image(systemName: "chevron.right").frame(width: 16, height: 16) }
-                .buttonStyle(.plain).modifier(GlassControl())
-                .disabled(currentPage >= pageCount - 1).help("Next page")
-                .accessibilityLabel("Next page")
-            Spacer()
+    private var scopeToolbar: some View {
+        HStack(spacing: 10) {
+            if !model.boardLists.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        scopeChip(title: "All Boards", color: nil, active: effectiveScope == .all) { scope = .all }
+                        ForEach(model.boardLists) { list in
+                            scopeChip(title: list.title, color: list.color, active: effectiveScope == .list(id: list.id)) { scope = .list(id: list.id) }
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 12)
+            SortMenu(sort: sort) { sort = $0 }
+            Button {
+                compactGrid.toggle()
+            } label: {
+                Image(systemName: compactGrid ? "square.grid.2x2" : "square.grid.2x3")
+            }
+            .buttonStyle(.plain).modifier(GlassControl())
+            .help(compactGrid ? "Comfortable grid" : "Compact grid")
+            .accessibilityLabel(compactGrid ? "Comfortable grid" : "Compact grid")
         }
-        .padding(.horizontal, 24).padding(.vertical, 12)
+        .padding(.horizontal, 28).padding(.top, 14)
+    }
+
+    private func scopeChip(title: String, color: String?, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let color {
+                    Circle().fill(Color(hex: color)).frame(width: 8, height: 8)
+                }
+                Text(title)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(active ? Color.accentColor.opacity(0.12) : Color.clear, in: Capsule())
+            .overlay(Capsule().strokeBorder(active ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1))
+            .foregroundStyle(active ? Color.accentColor : Color.secondary)
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    private var recentBoards: [Board] {
+        model.boards.compactMap { board in model.lastOpened[board.id].map { (board, $0) } }
+            .sorted { $0.1 > $1.1 }.prefix(3).map(\.0)
+    }
+
+    private var recentlyOpened: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recently opened").font(.headline)
+            HStack(spacing: 12) {
+                ForEach(recentBoards) { board in
+                    RecentBoardCard(
+                        board: board,
+                        list: model.boardLists.first { $0.boardIDs.contains(board.id) },
+                        timeText: model.lastOpened[board.id].map { Self.relativeFormatter.string(for: $0) ?? "" } ?? ""
+                    ) { onOpenBoard(board.id) }
+                }
+            }
+        }
     }
 }
 
-/// Isolated so the menu picker survives Home re-renders from the 1Hz board poll.
-private struct BoardScopePicker: View {
-    let lists: [BoardList]
-    let scope: HomeBoardScope
-    let onSelect: (HomeBoardScope) -> Void
+/// Isolated so the sort menu survives Home re-renders from the 1Hz board poll.
+private struct SortMenu: View {
+    let sort: HomeSort
+    let onSelect: (HomeSort) -> Void
 
     var body: some View {
-        Picker("Filter boards", selection: Binding(get: { scope }, set: { onSelect($0) })) {
-            Text("All Boards").tag(HomeBoardScope.all)
-            ForEach(lists) { list in
-                Label(list.title, systemImage: "folder").tag(HomeBoardScope.list(id: list.id))
+        Menu {
+            ForEach(HomeSort.allCases, id: \.self) { candidate in
+                Button(candidate.label) { onSelect(candidate) }
             }
+        } label: {
+            Label(sort.label, systemImage: "arrow.up.arrow.down")
         }
-        .pickerStyle(.menu)
-        .labelsHidden()
+        .menuStyle(.borderlessButton)
         .fixedSize()
-        .accessibilityLabel("Filter boards by list")
+        .accessibilityLabel("Sort boards")
+    }
+}
+
+private struct RecentBoardCard: View {
+    let board: Board
+    let list: BoardList?
+    let timeText: String
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 0) {
+                BoardThumbnail(board: board)
+                    .frame(width: 132, height: 76)
+                Divider().opacity(0.5)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(board.displayTitle).font(.headline).lineLimit(1)
+                    HStack(spacing: 8) {
+                        if let list {
+                            Text(list.title)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Color(hex: list.color).opacity(0.16), in: Capsule())
+                                .foregroundStyle(Color(hex: list.color))
+                        }
+                        Text(timeText).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.primary.opacity(0.08)))
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Open \(board.displayTitle)")
     }
 }
 
@@ -288,7 +392,7 @@ struct BoardCard: View {
     let onOpen: () -> Void
     @State private var hovering = false
 
-    private var title: String { board.title.isEmpty ? "Untitled board" : board.title }
+    private var title: String { board.displayTitle }
     private var boardColor: Color { Color(hex: board.color ?? "#7A8BA8") }
     private var noteCount: String { "\(board.notes.count) \(board.notes.count == 1 ? "note" : "notes")" }
     private var connectionCount: String { "\(board.connections.count) \(board.connections.count == 1 ? "connection" : "connections")" }
