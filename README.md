@@ -46,9 +46,9 @@ Open a board and select the **agent chat** button in the toolbar. CoThink connec
 
 *Example conversation on a demonstration board using a local mock model.*
 
-1. Open **Agent chat settings** (the gear) to choose or check the Pi executable, connect or disconnect, select an available model, and adjust the chat text size. See [Sign in to a model provider](#sign-in-to-a-model-provider) for first-time setup.
+1. Open **Chat options → Agent Chat Settings** to choose or check the Pi executable, connect or disconnect, select an available model, and adjust the chat text size. See [Sign in to a model provider](#sign-in-to-a-model-provider) for first-time setup.
 2. Ask Pi to explain, organize, or update the open board. Requests are sent to the model provider configured in Pi. Tool calls can read board context and, when requested, modify the board, read project files, or write exports.
-3. Use **Chat history** to start a new conversation or reopen an earlier session for the current board. The settings window also has a per-board **Agent memory** editor for facts and preferences to include in that board's future sessions.
+3. Use **Chat options → Chat History** to start a new conversation or reopen an earlier session for the current board. The settings window also has a per-board **Agent memory** editor for facts and preferences to include in that board's future sessions.
 4. Use **MCP Servers…** in settings to import or configure additional MCP servers. Their tools are bridged into Pi with a server-name prefix; changes apply to the next chat session.
 
 Each board's Pi sessions and memory are stored locally under the CoThink data directory. The chat window shares its session with the settings and history windows; switching to a different board connects Pi to that board's session. CoThink starts Pi in RPC mode with its configured model and credentials, disables Pi's built-in tools and automatic extensions, skills, and context files, and loads the CoThink bridge. CoThink's board tools with a `board_id` argument are bound to the open board; other CoThink tools and configured external MCP servers have their own arguments.
@@ -105,13 +105,13 @@ The script produces a local, unsigned app bundle. macOS may ask for approval whe
 ### Make your first board
 
 1. Choose **New Board** in the sidebar, then use the board settings button or Board inspector to name it.
-2. Double-click an empty area of the canvas or select **Note** to add an idea. Double-click a note to edit its text directly on the board; the inspector can edit it too.
+2. Double-click an empty area of the canvas to add an idea at that point. Select **Note** or press ⌘N to add one in the visible area. Double-click a note to edit its text directly on the board; the inspector can edit it too.
 3. Drag a note to move it. Select it and drag a corner to resize. Use the inspector to change its fill, border, and font size.
 4. Select a note and drag its connection handle onto another note. Alternatively, choose **Connect** and then the target note.
 5. Double-click the connection to open its properties. Add a relationship label, choose an arrow direction, and select **Straight**, **Curved**, or **Custom bends**. Drag the handles on the canvas to route curved and custom lines; custom paths also offer **Add bend** and **Remove bend**.
-6. Use **Files** to add project files. In a note's inspector choose **Attach from Project**, then click an attachment on the note to open it in its default macOS app.
+6. Open **Workspace → Project Files…** to add project files. In a note's inspector choose **Attach from Project**, then click an attachment on the note to open it in its default macOS app.
 
-The left and right toolbar buttons show or hide the boards sidebar and inspector. Clicking empty canvas or another object hides the inspector. Choose **System**, **Light**, or **Dark** in the appearance menu. Primary controls use native Liquid Glass on macOS 26 and later, and translucent system material on older supported versions.
+The left toolbar button shows or hides the boards sidebar. In the default automatic mode, the inspector opens when you select an object and closes when you clear the selection. The right toolbar button switches to an explicit show or hide choice. Choose **Workspace → Inspector → Automatic** to restore automatic behavior, or select **Always Show** or **Always Hide**. Double-clicking a connection opens its properties even when the inspector is hidden. Choose **System**, **Light**, or **Dark** in **Workspace → Appearance**. The workspace uses native system materials, with an accent highlight for the active canvas tool.
 
 ### Select, group, and lock notes
 
@@ -123,7 +123,7 @@ The left and right toolbar buttons show or hide the boards sidebar and inspector
 
 ### Change a board's wallpaper
 
-Choose the photo icon in the toolbar or **Board → Change Wallpaper…**. Select a system or custom background color, choose an image from your Mac or **Project Images**, adjust its strength, and select **Save Wallpaper**. A newly chosen image is copied into the board's Project Files folder; existing project images can be reused. Choose **System** and remove the image to restore the default background. Wallpaper changes participate in board undo and redo. Removing the image from Project Files also clears its wallpaper reference, while keeping the file on disk.
+Choose **Workspace → Change Wallpaper…** or **Board → Change Wallpaper…**. Select a system or custom background color, choose an image from your Mac or **Project Images**, adjust its strength, and select **Save Wallpaper**. A newly chosen image is copied into the board's Project Files folder; existing project images can be reused. Choose **System** and remove the image to restore the default background. Wallpaper changes participate in board undo and redo. Removing the image from Project Files also clears its wallpaper reference, while keeping the file on disk.
 
 ### Organize boards into lists
 
@@ -131,7 +131,7 @@ Choose **…** beside a list in the sidebar to select **Rename or Edit…** or *
 
 ### Export a PDF
 
-Choose **Export → Export as PDF…**, select a template, check the preview, and choose **Save PDF…** to select a destination. The three designs are:
+Choose **Workspace → Export as PDF…**, select a template, check the preview, and choose **Save PDF…** to select a destination. The three designs are:
 
 - **Editorial:** warm paper and a serif title.
 - **Studio:** a navy header and a two-column note layout.
@@ -141,7 +141,7 @@ Each A4 PDF includes a scaled canvas overview followed by full note text, projec
 
 ## Connect an AI agent with MCP
 
-CoThink includes a **local stdio MCP server** in the app bundle. Build the app, open it, and choose **MCP** in the toolbar to copy a configuration for its current location. An example configuration for a client that accepts the `mcpServers` format:
+CoThink includes a **local stdio MCP server** in the app bundle. Build the app, open it, and choose **Workspace → Connect an AI Agent…** to copy a configuration for its current location. An example configuration for a client that accepts the `mcpServers` format:
 
 ```json
 {
@@ -226,7 +226,7 @@ Read-only mode is client configuration, not an authentication or security bounda
 
 ## Data and backups
 
-By default, the app stores its database and history in `~/Library/Application Support/CoThinkBoard/`. Project files default to `~/Library/Application Support/CoThinkBoard/Projects/<board-id>/`; a board can also use a folder you choose in **Files**.
+By default, the app stores its database and history in `~/Library/Application Support/CoThinkBoard/`. Project files default to `~/Library/Application Support/CoThinkBoard/Projects/<board-id>/`; a board can also use a folder you choose in **Project Files**.
 
 **Export as JSON** writes the current board as JSON, including its notes, connections, groups, and project-file metadata. It does not embed project-file contents, list membership, undo history, or change attribution. A board can also contain local file paths. Keep the project folder with the JSON when backing up or sharing it, and check the project-file location after import. Import creates a separate board with a new ID; it does not bundle or automatically copy the files.
 

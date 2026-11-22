@@ -2,6 +2,63 @@ import XCTest
 @testable import BoardCore
 
 final class BoardCoreTests: XCTestCase {
+    func testFitGroupEnclosesSpatialAndLockedMembersWithoutMovingThem() {
+        var group = BoardGroup(id: "g", x: 100, y: 100, width: 400, height: 300)
+        group.memberIDs = ["outside"]
+        let inside = Note(id: "inside", text: "A", x: 140, y: 180, width: 100, height: 70)
+        let outside = Note(id: "outside", text: "B", x: 550, y: 300, width: 100, height: 70)
+        let ignored = Note(id: "ignored", text: "C", x: 900, y: 900)
+        var board = Board(notes: [inside, outside, ignored], groups: [group])
+        XCTAssertTrue(board.fitGroup(id: "g", titleWidth: 150))
+        XCTAssertEqual(board.notes, [inside, outside, ignored])
+        let fitted = board.groups[0]
+        XCTAssertLessThanOrEqual(fitted.x, inside.x)
+        XCTAssertLessThanOrEqual(fitted.y + 36, inside.y)
+        XCTAssertGreaterThanOrEqual(fitted.x + fitted.width, outside.x + outside.width)
+        XCTAssertGreaterThanOrEqual(fitted.y + fitted.height, outside.y + outside.height)
+        board.groups[0].positionLocked = true
+        let locked = board
+        XCTAssertFalse(board.fitGroup(id: "g", titleWidth: 150))
+        XCTAssertEqual(board, locked)
+    }
+
+    func testPositionLockedGroupBlocksDirectAndMemberMovementAndPersists() throws {
+        var group = BoardGroup(id: "g", x: 20, y: 20)
+        group.memberIDs = ["a"]; group.positionLocked = true
+        var board = Board(notes: [Note(id: "a", text: "A", x: 40, y: 40)], groups: [group])
+        XCTAssertFalse(board.moveGroup(id: "g", dx: 10, dy: 10))
+        board.moveSelection(noteIDs: ["a"], dx: 10, dy: 10)
+        XCTAssertEqual(board.groups[0].x, 20)
+        XCTAssertEqual(board.notes[0].x, 40)
+        let decoded = try JSONDecoder().decode(Board.self, from: JSONEncoder().encode(board))
+        XCTAssertEqual(decoded.groups[0].positionLocked, true)
+        board.groups[0].positionLocked = false
+        XCTAssertTrue(board.moveGroup(id: "g", dx: 10, dy: 10))
+        XCTAssertEqual(board.notes[0].x, 50)
+    }
+
+    func testAlignmentUsesBoundsAndRejectsSharedMovementUnits() {
+        let a = Note(id: "a", text: "A", x: 100, y: 100, width: 100, height: 50)
+        let b = Note(id: "b", text: "B", x: 300, y: 200, width: 200, height: 100)
+        for alignment in [Board.NoteAlignment.left, .right, .top, .horizontalCenter, .verticalCenter] {
+            var board = Board(notes: [a, b])
+            XCTAssertTrue(board.alignNotes(ids: ["a", "b"], alignment: alignment))
+            let x = board.notes[0], y = board.notes[1]
+            switch alignment {
+            case .left: XCTAssertEqual(x.x, y.x)
+            case .right: XCTAssertEqual(x.x + x.width, y.x + y.width)
+            case .top: XCTAssertEqual(x.y, y.y)
+            case .horizontalCenter: XCTAssertEqual(x.x + x.width / 2, y.x + y.width / 2)
+            case .verticalCenter: XCTAssertEqual(x.y + x.height / 2, y.y + y.height / 2)
+            }
+        }
+        var group = BoardGroup(id: "g"); group.memberIDs = ["a", "b"]
+        var board = Board(notes: [a, b], groups: [group])
+        let original = board
+        XCTAssertFalse(board.alignNotes(ids: ["a", "b"], alignment: .left))
+        XCTAssertEqual(board, original)
+    }
+
     func testCopyGroupPreservesMembersAndConnectionsWithNewIDs() throws {
         var a = Note(id: "a", text: "A", x: 20, y: 30)
         a.assetIDs = ["asset"]

@@ -1,12 +1,10 @@
 import SwiftUI
 import PiChatCore
 
-/// Context-window gauge in the chat header. Hover shows a breakdown card:
-/// measured totals plus an honest estimated split of conversation vs system+tools.
 struct ContextUsageBadge: View {
     let usage: ContextUsage
     let conversationEstimate: Int
-    @State private var hovered = false
+    @State private var showingBreakdown = false
 
     private var percentText: String {
         guard let percent = usage.percent else { return "–" }
@@ -21,16 +19,21 @@ struct ContextUsageBadge: View {
     }
 
     var body: some View {
-        VStack(spacing: 3) {
-            Text(percentText).font(.caption2.weight(.semibold)).monospacedDigit()
-            ProgressView(value: usage.percent ?? 0)
-                .frame(width: 44)
-                .tint(badgeTint)
+        Button { showingBreakdown.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "chart.pie")
+                Text(percentText).monospacedDigit()
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(badgeTint)
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .onHover { hovering in hovered = hovering }
-        .popover(isPresented: $hovered, arrowEdge: .bottom) {
+        .buttonStyle(.plain)
+        .help("Context window usage")
+        .accessibilityLabel("Context window usage")
+        .accessibilityValue(usage.percent == nil ? "Not available yet" : percentText)
+        .popover(isPresented: $showingBreakdown, arrowEdge: .bottom) {
             breakdownCard.padding(14).frame(width: 300)
         }
     }

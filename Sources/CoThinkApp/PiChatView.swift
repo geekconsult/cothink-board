@@ -62,6 +62,10 @@ struct PiChatView: View {
         case .failed: return "Connection failed"
         }
     }
+    private var chatNeedsConnection: Bool {
+        if case .failed = chat.phase { return true }
+        return chat.phase == .stopped
+    }
     private var thinkingEnabled: Bool { chat.thinkingEnabled }
     private var thinkingToggleDisabled: Bool { !chat.canToggleThinking }
     private var thinkingHelp: String {
@@ -72,36 +76,7 @@ struct PiChatView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-            HStack(alignment: .center) {
-                MascotLogo().frame(width: 36, height: 36)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Agent · \(board.title)").font(.headline).lineLimit(1).truncationMode(.tail)
-                    HStack(spacing: 5) {
-                        Circle().fill(chat.phase == .ready || chat.phase == .running ? Color.green : Color.secondary.opacity(0.55)).frame(width: 6, height: 6)
-                        Text(status).lineLimit(1)
-                    }.font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                ContextUsageBadge(usage: chat.contextUsage, conversationEstimate: conversationEstimate)
-                Button {
-                    chat.setThinking(enabled: !thinkingEnabled)
-                } label: { Image(systemName: "brain").foregroundStyle(thinkingEnabled ? Color.accentColor : Color.secondary) }
-                    .buttonStyle(.borderless).modifier(GlassControl()).help(thinkingHelp)
-                    .accessibilityLabel(thinkingHelp)
-                    .disabled(thinkingToggleDisabled)
-                Button {
-                    withAnimation(.easeInOut(duration: 0.3)) { toggleVoiceMode() }
-                } label: { Image(systemName: "waveform") }
-                    .buttonStyle(.borderless).modifier(GlassControl()).help("Voice mode")
-                    .accessibilityLabel("Voice mode")
-                Button { AuxiliaryWindowHost.shared.open(id: "agent-settings") } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(.borderless).modifier(GlassControl()).help("Agent chat settings")
-                    .accessibilityLabel("Agent chat settings")
-                Button { AuxiliaryWindowHost.shared.open(id: "chat-history") } label: { Image(systemName: "clock.arrow.circlepath") }
-                    .buttonStyle(.borderless).modifier(GlassControl()).help("Chat history")
-                    .accessibilityLabel("Chat history")
-            }.padding(.horizontal, 16).padding(.vertical, 12)
-                .background(.thinMaterial)
+            chatHeader
             if case .failed(let error) = chat.phase {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -113,32 +88,11 @@ struct PiChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if chat.messages.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Work on this board with Pi").font(.subheadline.weight(.semibold))
-                                Text("Ask Pi to understand, organize, or update your notes. Changes appear on the board automatically.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }.padding(.vertical, 10)
+                            emptyConversation
                         }
                         ForEach(chat.messages) { message in
-                            HStack(alignment: .bottom, spacing: 0) {
-                                if message.role == .user { Spacer(minLength: 30) }
-                                VStack(alignment: .leading, spacing: 5) {
-                                    HStack(spacing: 6) {
-                                        Text(label(message.role)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                                        Spacer(minLength: 0)
-                                        Text(message.timestamp, format: chatTimestampFormat(message.timestamp))
-                                            .font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
-                                    }
-                                    markdownMessage(message.text).font(.system(size: chatFontSize)).textSelection(.enabled)
-                                        .foregroundStyle(message.role == .error ? Color.red : Color.primary)
-                                }
-                                .padding(.horizontal, 13).padding(.vertical, 10)
-                                .frame(maxWidth: 540, alignment: .leading)
-                                .background(message.role == .user ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(Color.primary.opacity(0.055)))
-                                if message.role != .user { Spacer(minLength: 20) }
-                            }
-                            .id(message.id)
+                            messageRow(message)
+                                .id(message.id)
                         }
                     }.padding(.horizontal, 14).padding(.vertical, 16)
                 }
@@ -149,7 +103,7 @@ struct PiChatView: View {
                     TextField("Ask about this board…", text: $input, axis: .vertical)
                         .textFieldStyle(.plain).lineLimit(1...5).focused($inputFocused)
                         .onSubmit(send)
-                        .disabled(chat.phase != .ready)
+                        .accessibilityLabel("Message to agent")
                     Button(action: dictation.toggle) {
                         Image(systemName: dictationActive ? "mic.fill" : "mic")
                             .font(.title2)
@@ -175,13 +129,21 @@ struct PiChatView: View {
                     .fixedSize()
                     .help("Dictation language")
                     .accessibilityLabel("Dictation language")
-                    if chat.phase == .running { Button("Stop", systemImage: "stop.fill") { chat.cancel() } }
+                    if chat.phase == .running {
+                        Button { chat.cancel() } label: { Image(systemName: "stop.fill") }
+                            .help("Stop response").accessibilityLabel("Stop response")
+                    }
                     Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                        .buttonStyle(.plain).accessibilityLabel("Send")
+                        .buttonStyle(.plain).help("Send message").accessibilityLabel("Send message")
                         .disabled(chat.phase != .ready || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 13).padding(.vertical, 10)
                 .modifier(GlassFloatingSurface())
+                if chat.phase == .running {
+                    Text("You can draft your next message while Pi is working.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if case .unavailable(let message) = dictation.phase {
                     Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -255,6 +217,124 @@ struct PiChatView: View {
             Text("Agent chat uses Pi and a model provider. Setup installs Pi in your user folder and requires Node.js and npm.")
         }
     }
+    private var chatHeader: some View {
+        HStack(spacing: 10) {
+            MascotLogo().frame(width: 32, height: 32).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(board.title.isEmpty ? "Agent chat" : board.title)
+                    .font(.headline).lineLimit(1).truncationMode(.tail)
+                HStack(spacing: 5) {
+                    Circle().fill(chat.phase == .ready || chat.phase == .running ? Color.green : Color.secondary.opacity(0.55))
+                        .frame(width: 6, height: 6).accessibilityHidden(true)
+                    Text(status).lineLimit(1)
+                }.font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            ContextUsageBadge(usage: chat.contextUsage, conversationEstimate: conversationEstimate)
+            Button {
+                withAnimation(.easeInOut(duration: 0.3)) { toggleVoiceMode() }
+            } label: { Image(systemName: "waveform").frame(width: 24, height: 24) }
+                .buttonStyle(.borderless).help("Voice mode").accessibilityLabel("Voice mode")
+            Menu {
+                Button(thinkingEnabled ? "Turn Thinking Off" : "Turn Thinking On", systemImage: "brain") {
+                    chat.setThinking(enabled: !thinkingEnabled)
+                }.disabled(thinkingToggleDisabled).help(thinkingHelp)
+                Divider()
+                Button("Chat History", systemImage: "clock.arrow.circlepath") {
+                    AuxiliaryWindowHost.shared.open(id: "chat-history")
+                }
+                Button("Agent Chat Settings", systemImage: "gearshape") {
+                    AuxiliaryWindowHost.shared.open(id: "agent-settings")
+                }
+            } label: { Image(systemName: "ellipsis.circle").frame(width: 24, height: 24) }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Chat options").accessibilityLabel("Chat options")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(.thinMaterial)
+        .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.07)).frame(height: 1) }
+    }
+
+    private var emptyConversation: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "bubble.left.and.text.bubble.right")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 44, height: 44)
+                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Think through this board together").font(.headline)
+                Text("Ask Pi to understand, organize, or update your notes. Changes appear on the board automatically.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                suggestion("Summarize this board", symbol: "text.alignleft")
+                suggestion("Suggest a next step", symbol: "arrow.turn.down.right")
+            }
+            if chatNeedsConnection {
+                Button("Open chat settings", systemImage: "gearshape") {
+                    AuxiliaryWindowHost.shared.open(id: "agent-settings")
+                }.buttonStyle(.bordered)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 16)
+        .frame(maxWidth: 500, alignment: .leading)
+    }
+
+    private func suggestion(_ text: String, symbol: String) -> some View {
+        Button {
+            input = text
+            inputFocused = true
+        } label: {
+            Label(text, systemImage: symbol)
+                .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 11).padding(.vertical, 9)
+                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .disabled(!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .help("Add this suggestion to your message")
+    }
+
+    @ViewBuilder
+    private func messageRow(_ message: ChatMessage) -> some View {
+        if message.role == .activity {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "circle.dotted").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Text(message.text).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                Spacer(minLength: 0)
+                Text(message.timestamp, format: chatTimestampFormat(message.timestamp))
+                    .font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
+            }
+            .padding(.horizontal, 4).padding(.vertical, 3)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Activity, \(message.text)")
+        } else {
+            HStack(alignment: .bottom, spacing: 0) {
+                if message.role == .user { Spacer(minLength: 30) }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(label(message.role)).font(.caption.weight(.semibold))
+                            .foregroundStyle(message.role == .error ? Color.red : Color.secondary)
+                        Spacer(minLength: 0)
+                        Text(message.timestamp, format: chatTimestampFormat(message.timestamp))
+                            .font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
+                    }
+                    markdownMessage(message.text).font(.system(size: chatFontSize)).textSelection(.enabled)
+                        .foregroundStyle(message.role == .error ? Color.red : Color.primary)
+                }
+                .padding(.horizontal, 13).padding(.vertical, 11)
+                .frame(maxWidth: 540, alignment: .leading)
+                .background(message.role == .user ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+                if message.role != .user { Spacer(minLength: 20) }
+            }
+        }
+    }
+
     private func label(_ role: ChatMessage.Role) -> String {
         switch role { case .user: return "You"; case .assistant: return "Pi"; case .activity: return "Activity"; case .error: return "Error" }
     }
@@ -367,6 +447,7 @@ struct PiChatView: View {
         if voiceMode { dictation.start() } else { dictation.stop() }
     }
     private func send() {
+        guard chat.phase == .ready else { return }
         let dictating = dictation.phase == .listening || dictation.phase == .reconnecting
         if dictating { dictation.stop() }
         let text = (dictating

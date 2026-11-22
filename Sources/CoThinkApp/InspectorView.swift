@@ -51,6 +51,9 @@ struct InspectorView: View {
     @State private var saveTask: Task<Void, Never>?
     @State private var isLoading = false
     @State private var saveStatus = "Saved"
+    @State private var showingNoteDetails = false
+    @State private var showingNotePosition = false
+    @State private var showingNoteBorder = false
     @Environment(\.scenePhase) private var scenePhase
 
     private var selectionKey: String { "\(board.id):\(model.selectedNoteID ?? model.selectedGroupID ?? model.selectedConnectionID ?? "board")" }
@@ -154,37 +157,72 @@ struct InspectorView: View {
         }
     }
 
+    private func fitNote(_ id: String) {
+        savePending()
+        guard !model.draftBlocked, let current = model.board,
+              let note = current.notes.first(where: { $0.id == id }),
+              let size = NoteContentSizing.fittedSize(for: note) else { return }
+        if model.mutate({ board in
+            if let i = board.notes.firstIndex(where: { $0.id == id }) {
+                board.notes[i].width = size.width; board.notes[i].height = size.height
+            }
+        }) { loadSelection() }
+    }
+
+    private func fitGroup(_ id: String) {
+        savePending()
+        guard !model.draftBlocked, let current = model.board,
+              let group = current.groups.first(where: { $0.id == id }), group.positionLocked != true else { return }
+        let titleWidth = NoteContentSizing.groupTitleWidth(group)
+        if model.mutate({ board in _ = board.fitGroup(id: id, titleWidth: titleWidth) }) { loadSelection() }
+    }
+
     private func noteProperties(_ note: Note) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("IDEA").font(.caption.bold()).foregroundStyle(.secondary)
+            Text("NOTE").font(.caption.bold()).foregroundStyle(.secondary)
             TextEditor(text: $text).font(.body).frame(minHeight: 100)
                 .scrollContentBackground(.hidden).padding(6)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.1)))
-            parentControls(note)
-            imageAttachmentControls
-            projectAttachmentControls
-            if let group = board.groupContaining(noteID: note.id) {
-                Label("Locked in \(group.title)", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
-                Button("Unlock from group", systemImage: "lock.open") { model.unlockNote(note.id) }
-                    .help("Remove this note from its group so it can move independently")
-            } else if !board.groups.isEmpty {
-                Label("Moves independently", systemImage: "lock.open").font(.caption).foregroundStyle(.secondary)
-            }
-            if !board.groups.isEmpty {
-                Menu {
-                    ForEach(board.groups) { group in
-                        Button(group.title) { model.lockNote(note.id, to: group.id) }
-                            .disabled(board.groupContaining(noteID: note.id)?.id == group.id)
-                    }
-                } label: { Label("Lock to group", systemImage: "lock") }
-                    .help("Choose a group to move together with this note")
-            }
-            geometryFields
-            shapeControl
-            fontSizeControl
+                .accessibilityLabel("Note text")
             colors
-            strokeControls
+            fontSizeControl
+            shapeControl
+            if let group = board.groupContaining(noteID: note.id) {
+                Label("Locked in \(group.title)", systemImage: "lock.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Files and relationships", isExpanded: $showingNoteDetails) {
+                VStack(alignment: .leading, spacing: 16) {
+                    parentControls(note)
+                    imageAttachmentControls
+                    projectAttachmentControls
+                    if board.groupContaining(noteID: note.id) != nil {
+                        Button("Unlock from group", systemImage: "lock.open") { model.unlockNote(note.id) }
+                            .help("Remove this note from its group so it can move independently")
+                    } else if !board.groups.isEmpty {
+                        Label("Moves independently", systemImage: "lock.open").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !board.groups.isEmpty {
+                        Menu {
+                            ForEach(board.groups) { group in
+                                Button(group.title) { model.lockNote(note.id, to: group.id) }
+                                    .disabled(board.groupContaining(noteID: note.id)?.id == group.id)
+                            }
+                        } label: { Label("Lock to group", systemImage: "lock") }
+                            .help("Choose a group to move together with this note")
+                    }
+                }.padding(.top, 10)
+            }
+            Button("Fit to content", systemImage: "arrow.up.left.and.arrow.down.right") { fitNote(note.id) }
+                .disabled(note.shape == .line || (note.text.isEmpty && note.shape != nil && note.shape != .text))
+                .help("Fit width and height to the content")
+            DisclosureGroup("Position and size", isExpanded: $showingNotePosition) {
+                geometryFields.padding(.top, 10)
+            }
+            DisclosureGroup("Border", isExpanded: $showingNoteBorder) {
+                strokeControls.padding(.top, 10)
+            }
         }
     }
 
@@ -224,7 +262,20 @@ struct InspectorView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Button("Lock notes inside group") { model.lockNotes(in: group.id) }
                 .help("Lock notes whose centers are inside this group. Notes move together when you drag any member.")
-            geometryFields
+            Toggle("Lock group position", isOn: Binding(
+                get: { group.positionLocked == true },
+                set: { locked in
+                    savePending()
+                    guard !model.draftBlocked else { return }
+                    model.mutate { board in
+                        if let i = board.groups.firstIndex(where: { $0.id == group.id }) { board.groups[i].positionLocked = locked }
+                    }
+                }))
+                .help("Prevent moving or resizing this group and moving its locked notes")
+            Button("Fit to contents", systemImage: "arrow.up.left.and.arrow.down.right") { fitGroup(group.id) }
+                .disabled(group.positionLocked == true)
+                .help("Fit the group around its title and objects inside it")
+            geometryFields.disabled(group.positionLocked == true)
             fontSizeControl
             colors
             strokeControls
@@ -295,21 +346,42 @@ struct InspectorView: View {
         }
     }
 
+    private func alignmentButton(_ title: String, _ alignment: Board.NoteAlignment) -> some View {
+        Button(title) {
+            var updated = board
+            guard updated.alignNotes(ids: model.selectedNoteIDs, alignment: alignment) else {
+                model.error = "Cannot align this selection: notes may share a group or tree, belong to a position-locked group, or extend beyond the canvas."
+                return
+            }
+            model.mutate { $0 = updated }
+        }
+        .help("Align selected notes by their \(title.lowercased()) edges or centers")
+    }
+
     private var multiNoteProperties: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("\(selectedNotes.count) NOTES SELECTED").font(.caption.bold()).foregroundStyle(.secondary)
             Text("Changes below apply to every selected note.")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("ALIGN").font(.caption.bold()).foregroundStyle(.secondary)
+            HStack {
+                alignmentButton("Left", .left)
+                alignmentButton("Center", .horizontalCenter)
+                alignmentButton("Right", .right)
+            }
+            HStack {
+                alignmentButton("Top", .top)
+                alignmentButton("Middle", .verticalCenter)
+            }
             multiColors
             multiFontSizeControl
             multiStrokeControls
-                Button("Fit heights to content") {
+            Button("Fit to content", systemImage: "arrow.up.left.and.arrow.down.right") {
                 applyToSelectedNotes { note in
-                    guard note.autofitsHeight else { return }
-                    note.height = NoteContentSizing.height(for: note.text, fontSize: note.fontSize ?? 15, width: note.width)
+                    guard let size = NoteContentSizing.fittedSize(for: note) else { return }
+                    note.width = size.width; note.height = size.height
                 }
-            }
-            .help("Resize every selected note to fit its own text")
+            }.help("Fit each selected object to its content")
         }
     }
 
@@ -325,7 +397,8 @@ struct InspectorView: View {
                     Button { applyToSelectedNotes { $0.color = shade } } label: {
                         Circle().fill(Color(hex: shade)).frame(width: 23, height: 23)
                             .overlay(Circle().stroke(selectedNotes.allSatisfy { $0.color == shade } ? Color.accentColor : Color.secondary.opacity(0.4), lineWidth: selectedNotes.allSatisfy { $0.color == shade } ? 2 : 1))
-                    }.buttonStyle(.plain).help(shade)
+                    }.buttonStyle(.plain).help("Fill color \(shade)")
+                        .accessibilityLabel("Fill color \(shade)")
                 }
             }
         }
@@ -387,7 +460,7 @@ struct InspectorView: View {
                 }
                 Divider()
             }
-            Text("Double-click a note or group title to edit it on the canvas. Double-click empty canvas to add a note; click empty canvas to close this panel.")
+            Text("Double-click a note or group title to edit it on the canvas. Double-click empty canvas to add a note.")
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
@@ -490,7 +563,8 @@ struct InspectorView: View {
                     Button { color = shade } label: {
                         Circle().fill(Color(hex: shade)).frame(width: 23, height: 23)
                             .overlay(Circle().stroke(color == shade ? Color.accentColor : Color.secondary.opacity(0.4), lineWidth: color == shade ? 2 : 1))
-                    }.buttonStyle(.plain).help(shade)
+                    }.buttonStyle(.plain).help("Fill color \(shade)")
+                        .accessibilityLabel("Fill color \(shade)")
                 }
             }
         }

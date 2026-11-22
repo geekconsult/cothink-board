@@ -63,7 +63,7 @@ struct CoThinkApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Note") { model.addNote() }.keyboardShortcut("n", modifiers: .command).disabled(model.board == nil || model.homeVisible)
+                Button("New Note") { NotificationCenter.default.post(name: .newNoteCommand, object: nil) }.keyboardShortcut("n", modifiers: .command).disabled(model.board == nil || model.homeVisible)
                 Button("New Board") { model.createBoard() }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandMenu("Board") {
@@ -141,6 +141,7 @@ final class BoardViewModel: ObservableObject {
     func selectAllNotes() {
         guard let board, !board.notes.isEmpty else { return }
         NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked else { return }
         selectedNoteIDs = Set(board.notes.map(\.id)); selectedNoteID = nil; selectedGroupID = nil; selectedConnectionID = nil
     }
     var selectionCount: Int { (selectedNoteID != nil ? 1 : 0) + selectedNoteIDs.count + (selectedGroupID != nil ? 1 : 0) + (selectedConnectionID != nil ? 1 : 0) }
@@ -662,7 +663,7 @@ struct WorkspaceView: View {
     @ObservedObject var model: BoardViewModel
     let agentSession: AgentChatSession
     @AppStorage("showBoardSidebar") private var showBoardSidebar = true
-    @AppStorage("showInspector") private var showInspector = true
+    @AppStorage("inspectorVisibility") private var inspectorVisibilityRaw = InspectorVisibility.automatic.rawValue
     @AppStorage("appearanceMode") private var appearanceMode = "system"
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -707,6 +708,11 @@ struct WorkspaceView: View {
     @State private var showingHome = true
     @FocusState private var canvasFocused: Bool
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var inspectorVisibility: InspectorVisibility {
+        InspectorVisibility(rawValue: inspectorVisibilityRaw) ?? .automatic
+    }
+    private var showInspector: Bool { inspectorVisibility.isVisible(hasSelection: model.hasSelection) }
 
     var body: some View { dialogAndCommandLayer }
 
@@ -760,7 +766,11 @@ struct WorkspaceView: View {
     }
 
     private var dialogAndCommandLayer: some View {
-        let base = rootContent
+        let content = rootContent
+            .onReceive(NotificationCenter.default.publisher(for: .newNoteCommand)) { _ in
+                if !showingHome { addNoteInViewport() }
+            }
+        let base = content
         .background(workspaceBackground)
         .preferredColorScheme(appearanceMode == "light" ? .light : appearanceMode == "dark" ? .dark : nil)
         .tint(colorScheme == .dark
@@ -1103,14 +1113,18 @@ struct WorkspaceView: View {
         }
     }
 
-    func toggleInspector() {
-        if showInspector {
+    func setInspectorVisibility(_ visibility: InspectorVisibility) {
+        if showInspector && !visibility.isVisible(hasSelection: model.hasSelection) {
             NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
             guard !model.draftBlocked else { return }
         }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-            showInspector.toggle()
+            inspectorVisibilityRaw = visibility.rawValue
         }
+    }
+
+    func toggleInspector() {
+        setInspectorVisibility(inspectorVisibility.toggled(hasSelection: model.hasSelection))
     }
 
     func openProjectFiles() {
@@ -1155,6 +1169,18 @@ struct WorkspaceView: View {
         }
     }
 
+    func addNoteInViewport() {
+        finishInlineEditing()
+        guard viewport.width > 0, viewport.height > 0 else {
+            model.addNote()
+            return
+        }
+        let x = max(0, viewport.midX / zoom - 95)
+        let y = max(0, viewport.midY / zoom - 50)
+        model.addNote(x: x, y: y)
+        canvasFocused = true
+    }
+
     func zoomStep(_ direction: Double) {
         // Round to one decimal first so repeated steps don't drift (e.g. 0.7 + 0.1 → 0.7999…)
         let base = (zoom * 10).rounded()
@@ -1164,108 +1190,135 @@ struct WorkspaceView: View {
     func toolbar(_ board: Board?) -> some View {
         HStack(spacing: 10) {
             Button(action: toggleSidebar) {
-                Image(systemName: "sidebar.left")
-                    .frame(width: 22, height: 24)
+                Image(systemName: "sidebar.left").frame(width: 22, height: 26)
             }
             .help(showBoardSidebar ? "Hide boards (⌘⌥1)" : "Show boards (⌘⌥1)")
             .accessibilityLabel(showBoardSidebar ? "Hide boards" : "Show boards")
             .accessibilityValue(showBoardSidebar ? "Visible" : "Hidden")
             .keyboardShortcut("1", modifiers: [.command, .option])
 
-            Button { showingHome = true } label: { Image(systemName: "house").frame(width: 22, height: 24) }
+            Button { showingHome = true } label: { Image(systemName: "house").frame(width: 22, height: 26) }
                 .help("Home — all boards (⌘⇧H)")
                 .accessibilityLabel("Home")
                 .keyboardShortcut("h", modifiers: [.command, .shift])
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(board?.title ?? "CoThink Board").font(.headline).lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(board.map { $0.title.isEmpty ? "Untitled board" : $0.title } ?? "CoThink Board")
+                    .font(.headline).lineLimit(1)
                 if case .select = tool {
-                    toolStatusRow("Select · drag to select notes · Esc to cancel")
+                    toolStatusRow("Drag to select · Esc to cancel")
                 } else if case .shape(let kind) = tool {
-                    toolStatusRow("Creating: \(kind.rawValue) · drag or click to place · Esc to cancel")
+                    toolStatusRow("\(kind.rawValue) · place on canvas · Esc to cancel")
                 } else if model.connectingFrom != nil {
                     Text("Select another note to connect").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if drawingGroup {
-                    Text("Drag on the canvas to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text("Drag to draw a group · Esc to cancel").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if let start = selectionStart, let end = selectionEnd, let board {
                     let hidden = board.hiddenNoteIDs()
-                    let marqueeCount = board.notes.filter { !hidden.contains($0.id) && BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
-                    Text("Selecting \(marqueeCount) note\(marqueeCount == 1 ? "" : "s")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    let count = board.notes.filter { !hidden.contains($0.id) && BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y).containsCenter(of: $0) }.count
+                    Text("Selecting \(count) note\(count == 1 ? "" : "s")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if !model.selectedNoteIDs.isEmpty {
-                    Text("\(model.selectedNoteIDs.count) notes selected · Drag to move together · ⌘C to copy").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text("\(model.selectedNoteIDs.count) notes selected · ⌘C to copy").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text("Board workspace").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
 
-            Button(tool == .select ? "Selecting" : "Select", systemImage: "cursorarrow") {
-                tool = tool == .select ? .note : .select
+            HStack(spacing: 3) {
+                Button("Select", systemImage: "cursorarrow") {
+                    tool = tool == .select ? .note : .select
+                }
+                .modifier(WorkspaceToolStyle(isActive: tool == .select))
+                .help("Select mode: drag without creating notes (V); click again for the note tool (N)")
+                .accessibilityLabel(tool == .select ? "Switch to the note tool" : "Switch to the select tool")
+                .accessibilityValue(tool == .select ? "Active" : "Inactive")
+
+                Button("Note", systemImage: "plus.square") { addNoteInViewport() }
+                    .modifier(WorkspaceToolStyle())
+                    .help("Add a note (⌘N)")
+                Menu {
+                    Button("Rectangle") { tool = .shape(.rectangle) }
+                    Button("Ellipse") { tool = .shape(.ellipse) }
+                    Button("Diamond") { tool = .shape(.diamond) }
+                    Button("Line") { tool = .shape(.line) }
+                    Button("Text") { tool = .shape(.text) }
+                } label: { Label("Shape", systemImage: "square.on.circle") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .modifier(WorkspaceToolStyle(isActive: { if case .shape = tool { return true }; return false }()))
+                    .help("Add a diagram shape")
+                Button(drawingGroup ? "Cancel group" : "Group", systemImage: "square.dashed") { requestGroup() }
+                    .modifier(WorkspaceToolStyle(isActive: drawingGroup))
+                    .help(drawingGroup ? "Cancel drawing a group" : "Group selected notes or draw a group (⇧⌘G)")
+                    .accessibilityValue(drawingGroup ? "Active" : "Inactive")
+                Button("Connect", systemImage: "arrow.up.right") { model.beginConnection() }
+                    .modifier(WorkspaceToolStyle(isActive: model.connectingFrom != nil))
+                    .disabled(model.selectedNoteID == nil)
+                    .help("Select a note then select another (⌘L), or drag its connection handle")
             }
-            .modifier(GlassControl()).help("Select mode: click and drag without creating notes (V); click again for the note tool (N)").disabled(board == nil)
-            .accessibilityLabel(tool == .select ? "Switch to the note tool" : "Switch to the select tool")
-            Button("Note", systemImage: "plus.square") { model.addNote() }.modifier(GlassControl()).help("Add a note (⌘N)").disabled(board == nil)
-            Menu {
-                Button("Rectangle") { tool = .shape(.rectangle) }
-                Button("Ellipse") { tool = .shape(.ellipse) }
-                Button("Diamond") { tool = .shape(.diamond) }
-                Button("Line") { tool = .shape(.line) }
-            } label: { Label("Shape", systemImage: "square.on.circle") }
-                .modifier(GlassControl()).help("Add a diagram shape").disabled(board == nil)
-            Button(drawingGroup ? "Cancel group" : "Group", systemImage: "square.dashed") { requestGroup() }
-                .modifier(GlassControl()).help("Group selected notes or draw a group (⇧⌘G)").disabled(board == nil)
-            Button("Connect", systemImage: "arrow.up.right") {
-                model.beginConnection()
-            }.modifier(GlassControl()).disabled(model.selectedNoteID == nil || board == nil).help("Select a note then select another (⌘L), or drag its connection handle")
-            Divider().frame(height: 24)
-            Button { zoomStep(-1) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out (⌘−)").disabled(board == nil)
-            Text("\(Int(zoom * 100))%").font(.caption.monospacedDigit()).frame(width: 40).help("Pinch with the trackpad to zoom the canvas")
-            Button { zoomStep(1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in (⌘+)").disabled(board == nil)
-            Menu {
-                Button { appearanceMode = "system" } label: { themeLabel("System", selected: appearanceMode == "system") }
-                Button { appearanceMode = "light" } label: { themeLabel("Light", selected: appearanceMode == "light") }
-                Button { appearanceMode = "dark" } label: { themeLabel("Dark", selected: appearanceMode == "dark") }
-            } label: {
-                Image(systemName: appearanceMode == "dark" ? "moon.stars" : appearanceMode == "light" ? "sun.max" : "circle.lefthalf.filled")
-                    .frame(width: 24, height: 24)
+            .disabled(board == nil)
+            .padding(3)
+            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+            HStack(spacing: 2) {
+                Button { zoomStep(-1) } label: { Image(systemName: "minus").frame(width: 24, height: 26) }
+                    .help("Zoom out (⌘−)").accessibilityLabel("Zoom out")
+                Button { zoom = 1.0 } label: {
+                    Text("\(Int(zoom * 100))%")
+                        .font(.caption.monospacedDigit()).frame(width: 38)
+                }
+                .help("Reset zoom to 100% (⌘0)")
+                .accessibilityLabel("Reset zoom to 100 percent; current zoom \(Int(zoom * 100)) percent")
+                Button { zoomStep(1) } label: { Image(systemName: "plus").frame(width: 24, height: 26) }
+                    .help("Zoom in (⌘+)").accessibilityLabel("Zoom in")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .modifier(GlassControl())
-            .help("Appearance: system, light or dark")
-            .accessibilityLabel("Appearance")
-            .accessibilityValue(appearanceMode.capitalized)
-            Button("Files", systemImage: "folder", action: openProjectFiles)
-                .help("Manage files for this board")
-                .disabled(board == nil)
-            Button(action: openWallpaper) { Image(systemName: "photo.on.rectangle.angled") }
-                .help("Change board wallpaper").accessibilityLabel("Board wallpaper").disabled(board == nil)
-            Button("MCP", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
-                .help("Connect an AI agent")
+            .disabled(board == nil)
+
+            Menu {
+                Section("Board") {
+                    Button("Project Files…", systemImage: "folder", action: openProjectFiles).disabled(board == nil)
+                    Button("Change Wallpaper…", systemImage: "photo.on.rectangle.angled", action: openWallpaper).disabled(board == nil)
+                    Button("Export as JSON…", action: model.exportBoard).disabled(board == nil)
+                    Button("Export as PDF…", action: openPDFExport).disabled(board == nil)
+                }
+                Section("View") {
+                    Menu("Inspector") {
+                        Button { setInspectorVisibility(.automatic) } label: { themeLabel("Automatic", selected: inspectorVisibility == .automatic) }
+                        Button { setInspectorVisibility(.shown) } label: { themeLabel("Always Show", selected: inspectorVisibility == .shown) }
+                        Button { setInspectorVisibility(.hidden) } label: { themeLabel("Always Hide", selected: inspectorVisibility == .hidden) }
+                    }
+                    Menu("Appearance") {
+                        Button { appearanceMode = "system" } label: { themeLabel("System", selected: appearanceMode == "system") }
+                        Button { appearanceMode = "light" } label: { themeLabel("Light", selected: appearanceMode == "light") }
+                        Button { appearanceMode = "dark" } label: { themeLabel("Dark", selected: appearanceMode == "dark") }
+                    }
+                }
+                Section("AI") {
+                    Button("Connect an AI Agent…", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
+                }
+            } label: { Label("Workspace", systemImage: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Board, view, and AI actions")
+                .accessibilityLabel("Workspace actions")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
-            Menu {
-                Button("Export as JSON…", action: model.exportBoard)
-                Button("Export as PDF…", action: openPDFExport)
-            } label: { Label("Export", systemImage: "square.and.arrow.up") }
-                .menuStyle(.borderlessButton).fixedSize().disabled(board == nil)
-            Divider().frame(height: 24)
+
             Button(action: toggleInspector) {
-                Image(systemName: "sidebar.right")
-                    .frame(width: 22, height: 24)
+                Image(systemName: "sidebar.right").frame(width: 22, height: 26)
             }
             .help(showInspector ? "Hide inspector (⌘⌥2)" : "Show inspector (⌘⌥2)")
             .accessibilityLabel(showInspector ? "Hide inspector" : "Show inspector")
-            .accessibilityValue(showInspector ? "Visible" : "Hidden")
+            .accessibilityValue("\(showInspector ? "Visible" : "Hidden"), \(inspectorVisibility.rawValue)")
             .keyboardShortcut("2", modifiers: [.command, .option])
             Button { AuxiliaryWindowHost.shared.open(id: "agent-chat") } label: {
-                MascotLogo().frame(width: 27, height: 27).padding(3)
-                    .accessibilityHidden(true)
+                MascotLogo().frame(width: 27, height: 27).padding(3).accessibilityHidden(true)
             }
             .help("Open the agent chat window")
             .accessibilityLabel("Open the agent chat window")
             .disabled(board == nil)
         }
         .buttonStyle(.borderless)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(.thinMaterial)
         .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 1) }
     }
@@ -1320,6 +1373,8 @@ struct WorkspaceView: View {
                                 finishInlineEditing()
                                 switch tool {
                                 case .select:
+                                    NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+                                    guard !model.draftBlocked else { return }
                                     model.clearSelection()
                                 case .shape(let kind):
                                     model.addShape(kind, frame: BoardRect(x: tap.location.x, y: tap.location.y, width: 160, height: kind == .line ? 80 : kind == .text ? 40 : 120), flipped: false)
@@ -1332,7 +1387,6 @@ struct WorkspaceView: View {
                                 NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
                                 guard !model.draftBlocked else { return }
                                 model.clearSelection()
-                                showInspector = false
                                 canvasFocused = true
                             }
                         })
@@ -1393,7 +1447,7 @@ struct WorkspaceView: View {
                     .contextMenu {
                         Button("Paste as New Note") { model.pasteSelection() }.disabled(!model.canPaste)
                         Divider()
-                        Button("New Note") { model.addNote() }
+                        Button("New Note") { addNoteInViewport() }
                     }
                 ForEach(board.groups) { group in groupView(group, movement: movement) }
                 ForEach(board.notes.filter { note in
@@ -1413,7 +1467,9 @@ struct WorkspaceView: View {
                             }
                             .simultaneousGesture(TapGesture(count: 2).onEnded {
                                 selectConnection(edge.id)
-                                if model.selectedConnectionID == edge.id { showInspector = true }
+                                if model.selectedConnectionID == edge.id && !showInspector {
+                                    setInspectorVisibility(.shown)
+                                }
                             })
                     }
                 }
@@ -1450,7 +1506,7 @@ struct WorkspaceView: View {
                     resizeHandles(id: note.id, rect: BoardRect(x: note.x, y: note.y, width: note.width, height: note.height), isNote: true,
                                   minWidth: note.extentMinWidth, minHeight: note.extentMinHeight)
                     connectionHandle(note, board: board, movement: movement)
-                } else if let group = board.groups.first(where: { $0.id == model.selectedGroupID }) {
+                } else if let group = board.groups.first(where: { $0.id == model.selectedGroupID }), group.positionLocked != true {
                     resizeHandles(id: group.id, rect: BoardRect(x: group.x, y: group.y, width: group.width, height: group.height), isNote: false)
                 } else if let edge = board.connections.first(where: { $0.id == model.selectedConnectionID }),
                           let from = indexes.note(edge.from), let to = indexes.note(edge.to) {
@@ -1492,6 +1548,10 @@ struct WorkspaceView: View {
                 return true
             }
             guard canvasAcceptsShortcuts else { return false }
+            if modifiers.isEmpty, (event.keyCode == 51 || event.keyCode == 117), model.hasSelection {
+                requestDeleteSelection()
+                return true
+            }
             if modifiers == .shift, event.keyCode == 48, let selected = model.selectedNoteID {
                 model.addViaTab(from: selected, shift: true)
                 return true
@@ -1714,7 +1774,6 @@ struct WorkspaceView: View {
             .position(x: displayed(note, movement: movement).x + displayed(note, movement: movement).width / 2, y: displayed(note, movement: movement).y + displayed(note, movement: movement).height / 2)
             .onTapGesture {
                 let inSelection = model.selectedNoteIDs.contains(note.id) || model.selectedNoteID == note.id
-                let clickedAnotherObject = !inSelection || model.selectedGroupID != nil
                 if editingObjectID != note.id { finishInlineEditing() }
                 if NSEvent.modifierFlags.contains(.option), model.connectingFrom == nil {
                     NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
@@ -1737,7 +1796,6 @@ struct WorkspaceView: View {
                 // Clicking a member of the current selection keeps the selection,
                 // so pressing on any member and dragging moves the whole selection.
                 canvasFocused = true
-                if clickedAnotherObject { showInspector = false }
             }
             .simultaneousGesture(TapGesture(count: 2).onEnded {
                 if note.shape == .line { model.chooseNote(note.id) } else { beginInlineEditing(note) }
@@ -1794,17 +1852,15 @@ struct WorkspaceView: View {
         )
         .position(x: rect.x + rect.width / 2, y: rect.y + rect.height / 2)
         .onTapGesture {
-            let clickedAnotherObject = model.selectedGroupID != group.id || model.selectedNoteID != nil
             if editingObjectID != group.id { finishInlineEditing() }
             model.chooseGroup(group.id); canvasFocused = true
-            if clickedAnotherObject { showInspector = false }
         }
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             beginInlineEditing(group)
         })
         .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("boardCanvas")).onChanged { value in
             if draggingID == nil { finishInlineEditing(); NotificationCenter.default.post(name: .flushBoardDraft, object: nil) }
-            guard !model.draftBlocked else { return }
+            guard !model.draftBlocked, group.positionLocked != true else { return }
             draggingID = group.id; dragTranslation = value.translation
         }.onEnded { value in
             guard draggingID == group.id else { return }
@@ -1823,7 +1879,6 @@ struct WorkspaceView: View {
         editingObjectID = note.id
         editingGroupTitle = false
         inlineText = note.text
-        showInspector = true
         canvasFocused = true
     }
 
@@ -1835,7 +1890,6 @@ struct WorkspaceView: View {
         editingObjectID = group.id
         editingGroupTitle = true
         inlineText = group.title
-        showInspector = true
         canvasFocused = true
     }
 
@@ -1886,6 +1940,25 @@ struct MascotLogo: View {
         } else {
             Image(systemName: "note.text").resizable().scaledToFit().padding(8).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// A quiet tool strip that makes the current canvas mode visible without
+/// applying the accent color to every action.
+struct WorkspaceToolStyle: ViewModifier {
+    var isActive = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+            .background {
+                if isActive {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.14))
+                }
+            }
     }
 }
 
@@ -1962,7 +2035,10 @@ struct GroupTile: View {
                     .onAppear { DispatchQueue.main.async { titleFocused = true } }
                     .onExitCommand(perform: onFinishEditing)
             } else {
-                Text(group.title.uppercased()).font(.system(size: group.fontSize ?? 11, weight: .bold)).tracking(1).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    if group.positionLocked == true { Image(systemName: "lock.fill").accessibilityLabel("Position locked") }
+                    Text(group.title.uppercased()).tracking(1)
+                }.font(.system(size: group.fontSize ?? 11, weight: .bold)).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -2297,6 +2373,7 @@ extension Notification.Name {
     static let showProjectFiles = Notification.Name("CoThinkShowProjectFiles")
     static let wallpaperCommand = Notification.Name("CoThinkWallpaperCommand")
     static let exportPDFCommand = Notification.Name("CoThinkExportPDFCommand")
+    static let newNoteCommand = Notification.Name("CoThinkNewNoteCommand")
     static let zoomInCommand = Notification.Name("CoThinkZoomInCommand")
     static let zoomOutCommand = Notification.Name("CoThinkZoomOutCommand")
     static let zoomResetCommand = Notification.Name("CoThinkZoomResetCommand")

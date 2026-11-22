@@ -136,6 +136,7 @@ public struct BoardGroup: Codable, Identifiable, Equatable {
     public var strokeWidth: Double?
     public var strokeStyle: LineStyle?
     public var memberIDs: [String]?
+    public var positionLocked: Bool?
     public init(id: String = UUID().uuidString, title: String = "Group", x: Double = 80, y: Double = 80, width: Double = 400, height: Double = 300, color: String = "#E6E9F5") {
         self.id = id; self.title = title; self.x = x; self.y = y; self.width = width; self.height = height; self.color = color
     }
@@ -262,6 +263,9 @@ public extension Board {
             if expanded == selected { break }
             selected = expanded
         }
+        if groups.contains(where: { groupIDs.contains($0.id) && $0.positionLocked == true }) {
+            return (selected, groupIDs, 0, 0)
+        }
         let movingNotes = notes.filter { selected.contains($0.id) }
         let movingGroups = groups.filter { groupIDs.contains($0.id) }
         let minX = (movingNotes.map(\.x) + movingGroups.map(\.x)).min() ?? 0
@@ -276,7 +280,7 @@ public extension Board {
     }
 
     func groupMovement(id: String, dx: Double, dy: Double) -> (dx: Double, dy: Double)? {
-        guard let group = groups.first(where: { $0.id == id }) else { return nil }
+        guard let group = groups.first(where: { $0.id == id }), group.positionLocked != true else { return nil }
         let ids = Set(group.memberIDs ?? [])
         let members = notes.filter { ids.contains($0.id) }
         let minX = ([group.x] + members.map(\.x)).min() ?? group.x
@@ -292,6 +296,73 @@ public extension Board {
         for i in notes.indices where members.contains(notes[i].id) {
             notes[i].x += delta.dx; notes[i].y += delta.dy
         }
+        return true
+    }
+
+    enum NoteAlignment { case left, right, top, horizontalCenter, verticalCenter }
+
+    // Each selected note is an anchor for its normal movement unit. Overlapping
+    // units cannot be aligned independently without breaking group/tree relations.
+    @discardableResult
+    mutating func alignNotes(ids: Set<String>, alignment: NoteAlignment) -> Bool {
+        let selected = notes.filter { ids.contains($0.id) }
+        guard selected.count >= 2 else { return false }
+        var occupied: Set<String> = []
+        for note in selected {
+            let unit = selectionMovement(noteIDs: [note.id], dx: 0, dy: 0)
+            guard occupied.isDisjoint(with: unit.noteIDs),
+                  !groups.contains(where: { unit.groupIDs.contains($0.id) && $0.positionLocked == true }) else { return false }
+            occupied.formUnion(unit.noteIDs)
+        }
+        let target: Double
+        switch alignment {
+        case .left: target = selected.map(\.x).min()!
+        case .right: target = selected.map { $0.x + $0.width }.max()!
+        case .top: target = selected.map(\.y).min()!
+        case .horizontalCenter: target = (selected.map(\.x).min()! + selected.map { $0.x + $0.width }.max()!) / 2
+        case .verticalCenter: target = (selected.map(\.y).min()! + selected.map { $0.y + $0.height }.max()!) / 2
+        }
+        var result = self
+        for note in selected {
+            let dx: Double, dy: Double
+            switch alignment {
+            case .left: dx = target - note.x; dy = 0
+            case .right: dx = target - note.x - note.width; dy = 0
+            case .top: dx = 0; dy = target - note.y
+            case .horizontalCenter: dx = target - note.x - note.width / 2; dy = 0
+            case .verticalCenter: dx = 0; dy = target - note.y - note.height / 2
+            }
+            let movement = result.selectionMovement(noteIDs: [note.id], dx: dx, dy: dy)
+            guard abs(movement.dx - dx) < 0.0001, abs(movement.dy - dy) < 0.0001 else { return false }
+            result.moveSelection(noteIDs: [note.id], dx: dx, dy: dy)
+        }
+        self = result
+        return true
+    }
+
+    /// Fit a group around its title and contents without moving its contents.
+    /// Spatial containment follows the same center-point rule used when grouping notes.
+    @discardableResult
+    mutating func fitGroup(id: String, titleWidth: Double, padding: Double = 20, titleHeight: Double = 36) -> Bool {
+        guard let index = groups.firstIndex(where: { $0.id == id }), groups[index].positionLocked != true else { return false }
+        let group = groups[index]
+        let rect = BoardRect(x: group.x, y: group.y, width: group.width, height: group.height)
+        let members = Set(group.memberIDs ?? [])
+        let contained = notes.filter { members.contains($0.id) || rect.containsCenter(of: $0) }
+        let innerGroups = groups.filter { other in
+            other.id != id && other.x + other.width / 2 >= rect.x && other.x + other.width / 2 <= rect.x + rect.width &&
+                other.y + other.height / 2 >= rect.y && other.y + other.height / 2 <= rect.y + rect.height &&
+                other.width <= group.width && other.height <= group.height
+        }
+        let boxes = contained.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } +
+            innerGroups.map { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+        let left = max(0, (boxes.map(\.x).min() ?? (group.x + padding)) - padding)
+        let top = max(0, (boxes.map(\.y).min() ?? (group.y + titleHeight)) - titleHeight)
+        let right = boxes.map { $0.x + $0.width }.max() ?? left
+        let bottom = boxes.map { $0.y + $0.height }.max() ?? top
+        groups[index].x = left; groups[index].y = top
+        groups[index].width = max(80, titleWidth + padding * 2, right + padding - left)
+        groups[index].height = max(50, titleHeight + padding, bottom + padding - top)
         return true
     }
 
