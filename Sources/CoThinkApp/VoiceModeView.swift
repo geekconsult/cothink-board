@@ -29,14 +29,17 @@ private struct VoiceChip: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                Image(systemName: systemImage)
                 Text(title)
+                if isOn { Image(systemName: "checkmark").font(.caption2.bold()) }
             }
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(isOn ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.08), in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
         .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
     }
 }

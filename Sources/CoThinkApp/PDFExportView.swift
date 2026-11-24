@@ -25,16 +25,8 @@ struct PDFExportView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Export as PDF").font(.title2.bold())
-                    Text("Choose a template for \(board.title)").foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
-                    .buttonStyle(.plain).help("Close").accessibilityLabel("Close PDF export")
-                    .keyboardShortcut(.cancelAction).disabled(preview.saving)
-            }.padding(20)
+            AppPanelHeader(title: "Export as PDF", subtitle: board.displayTitle, icon: "doc.richtext", closeLabel: "Close PDF export", close: { dismiss() })
+                .padding(16).disabled(preview.saving)
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -71,7 +63,7 @@ struct PDFExportView: View {
                 Spacer()
                 if preview.saving { ProgressView().controlSize(.small) }
                 Button("Cancel") { dismiss() }.disabled(preview.saving)
-                Button("Save PDF…") { save() }.keyboardShortcut(.defaultAction).disabled(preview.loading || preview.saving || !preview.ready)
+                Button("Save PDF…") { save() }.modifier(AppPrimaryAction()).keyboardShortcut(.defaultAction).disabled(preview.loading || preview.saving || !preview.ready)
             }.padding(16)
         }
         .frame(minWidth: 840, minHeight: 610)

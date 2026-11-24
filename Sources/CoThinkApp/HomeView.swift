@@ -2,14 +2,22 @@ import SwiftUI
 import BoardCore
 
 enum HomeBoardScope: Hashable {
-    case all
+    case all, unfiled
     case list(id: String)
 
     func boards(_ boards: [Board], lists: [BoardList], search: String) -> [Board] {
-        boards.filter { board in
-            if case .list(let id) = self {
-                let memberIDs = lists.first(where: { $0.id == id })?.boardIDs ?? []
-                if !memberIDs.contains(board.id) { return false }
+        let members: Set<String>
+        switch self {
+        case .all: members = []
+        case .unfiled: members = Set(lists.flatMap(\.boardIDs))
+        case .list(let id): members = Set(lists.first(where: { $0.id == id })?.boardIDs ?? [])
+        }
+        return boards.filter { board in
+            switch self {
+            case .all: break
+            case .unfiled where !members.contains(board.id): break
+            case .list where members.contains(board.id): break
+            default: return false
             }
             return search.isEmpty
                 || board.title.localizedCaseInsensitiveContains(search)
@@ -41,6 +49,20 @@ enum HomeSort: String, CaseIterable {
     }
 }
 
+struct DeskButton: View {
+    @ObservedObject var model: BoardViewModel
+    let board: Board
+
+    var body: some View {
+        let included = model.deskIDs.contains(board.id)
+        let action = included ? "Remove from Desk" : "Add to Desk"
+        Button { model.toggleDesk(board) } label: {
+            Label(action, systemImage: included ? "tray.full.fill" : "tray.and.arrow.down")
+        }
+        .accessibilityLabel("\(action), \(board.displayTitle)").help(action)
+    }
+}
+
 struct HomeView: View {
     @ObservedObject var model: BoardViewModel
     @Binding var search: String
@@ -68,11 +90,6 @@ struct HomeView: View {
         return model.boardLists.first { $0.id == id }
     }
 
-    private var sectionSubtitle: String {
-        if !search.isEmpty { return "Boards, tags, and notes matching your search." }
-        return selectedList == nil ? "A space for every idea." : "Boards in this list."
-    }
-
     private var filteredBoards: [Board] {
         sort.sorted(effectiveScope.boards(model.boards, lists: model.boardLists, search: search), lastOpened: model.lastOpened)
     }
@@ -84,6 +101,15 @@ struct HomeView: View {
             scopeToolbar
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
+                    deskSection
+                    if search.isEmpty, effectiveScope == .all,
+                       let pinned = model.boardLists.first(where: { $0.id == model.pinnedListID }) {
+                        pinnedSection(pinned)
+                    }
+                    if let selectedList {
+                        HomePinButton(model: model, list: selectedList)
+                            .buttonStyle(.borderless)
+                    }
                     if model.boards.isEmpty {
                         emptyState
                     } else if filteredBoards.isEmpty {
@@ -93,23 +119,25 @@ struct HomeView: View {
                             noResults
                         }
                     } else {
+                        if search.isEmpty && effectiveScope == .all && !recentBoards.isEmpty {
+                            recentlyOpened
+                        }
                         HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(search.isEmpty ? (selectedList?.title ?? "Your boards") : "Search results")
-                                    .font(.title2.weight(.semibold))
-                                Text(sectionSubtitle)
-                                    .font(.callout).foregroundStyle(.secondary)
-                            }
+                            Text(search.isEmpty ? (selectedList?.title ?? "All boards") : "Search results")
+                                .font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
                             Spacer()
                             Text("\(filteredBoards.count) \(filteredBoards.count == 1 ? "board" : "boards")")
                                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         }
-                        if search.isEmpty && effectiveScope == .all && !recentBoards.isEmpty {
-                            recentlyOpened
-                        }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: compactGrid ? 150 : 205, maximum: compactGrid ? 240 : 320), spacing: 16, alignment: .top)], spacing: 16) {
                             ForEach(filteredBoards) { board in
                                 BoardCard(board: board, isCurrent: model.board?.id == board.id) { onOpenBoard(board.id) }
+                                    .overlay(alignment: .topLeading) {
+                                        DeskButton(model: model, board: board)
+                                            .buttonStyle(.borderless).font(.caption.weight(.medium))
+                                            .padding(6).background(.regularMaterial, in: Capsule())
+                                            .padding(.leading, 8).padding(.top, 71)
+                                    }
                                     .overlay(alignment: .topTrailing) {
                                         Menu {
                                             Button("Open") { onOpenBoard(board.id) }
@@ -138,7 +166,7 @@ struct HomeView: View {
                     }
                 }
                 .frame(maxWidth: 1320, alignment: .leading)
-                .padding(.horizontal, 28).padding(.vertical, 28)
+                .padding(.horizontal, 24).padding(.vertical, 18)
                 .frame(maxWidth: .infinity, alignment: .top)
             }
         }
@@ -150,12 +178,91 @@ struct HomeView: View {
             Button("Cancel", role: .cancel) { boardToDelete = nil }
         } message: {
             if let board = boardToDelete {
-                Text("“\(board.displayTitle)” and its history will be removed from this Mac.")
+                Text("“\(board.displayTitle)” and its history will be removed. The deletion syncs to its connected web workspace.")
             }
         }
         .sheet(item: $settingsBoard) { board in
             BoardSettingsView(model: model, board: board).frame(width: 450)
         }
+    }
+
+    private var deskSection: some View {
+        let boards = model.boards.filter { model.deskIDs.contains($0.id) }
+            .sorted { ($0.editedAt ?? 0) > ($1.editedAt ?? 0) }
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("On Desk", systemImage: "tray.full").font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Text("\(boards.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if boards.isEmpty {
+                Text("Use Add to Desk on a board to keep it here while you work.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(boards) { board in
+                        HStack(spacing: 4) {
+                            Button { onOpenBoard(board.id) } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(board.displayTitle).font(.headline).lineLimit(1)
+                                    if let time = board.editedAt {
+                                        let date = Date(timeIntervalSince1970: Double(time) / 1000)
+                                        Text("Edited \(date.formatted(date: .abbreviated, time: .shortened))")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text("Edit time unavailable").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            DeskButton(model: model, board: board).labelStyle(.iconOnly).buttonStyle(.borderless)
+                        }
+                        .padding(10).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+        }
+        .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.09)))
+    }
+
+    private func pinnedSection(_ list: BoardList) -> some View {
+        let members = Set(list.boardIDs)
+        let boards = sort.sorted(model.boards.filter { members.contains($0.id) }, lastOpened: model.lastOpened)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "pin.fill").foregroundStyle(Color(hex: list.color))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pinned list").font(.caption).foregroundStyle(.secondary)
+                    Text(list.title).font(.headline).lineLimit(1).accessibilityAddTraits(.isHeader)
+                }
+                Spacer()
+                Button("Open list") { scope = .list(id: list.id) }
+                    .fixedSize().accessibilityLabel("Open list \(list.title)")
+            }
+            if boards.isEmpty {
+                Text("No boards in this list yet.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(boards.prefix(4)) { board in
+                        Button { onOpenBoard(board.id) } label: {
+                            HStack {
+                                Image(systemName: "square.grid.2x2").foregroundStyle(.secondary)
+                                Text(board.displayTitle).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(9).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain).help("Open \(board.displayTitle)")
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.09)))
     }
 
     private var header: some View {
@@ -177,10 +284,10 @@ struct HomeView: View {
 
     private var brand: some View {
         HStack(spacing: 10) {
-            MascotLogo().frame(width: 38, height: 38)
-            VStack(alignment: .leading, spacing: 2) {
+            MascotLogo().frame(width: 38, height: 38).accessibilityHidden(true)
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Text("CoThink").font(.headline)
-                Text("Your thinking space").font(.caption).foregroundStyle(.secondary)
+                AppVersionLabel()
             }
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -203,10 +310,11 @@ struct HomeView: View {
 
     private var headerActions: some View {
         HStack(spacing: 8) {
+            CloudAccountButton()
             Button("Import", systemImage: "square.and.arrow.down", action: model.importBoard)
                 .buttonStyle(.plain).modifier(GlassControl()).help("Import board")
             Button(action: onNewBoard) { Label("New Board", systemImage: "plus") }
-                .buttonStyle(.borderedProminent).controlSize(.regular)
+                .modifier(AppPrimaryAction()).controlSize(.regular)
                 .help("Create a board").accessibilityLabel("New board")
             if let current = model.board {
                 Button { onOpenBoard(current.id) } label: { Image(systemName: "arrow.backward.circle") }
@@ -229,7 +337,7 @@ struct HomeView: View {
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 330)
             Button("Create your first board", systemImage: "plus", action: onNewBoard)
-                .buttonStyle(.borderedProminent).padding(.top, 4)
+                .modifier(AppPrimaryAction()).padding(.top, 4)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 80)
     }
@@ -252,7 +360,7 @@ struct HomeView: View {
             Text("Drag boards onto this list in the sidebar to collect them here.")
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("Show All Boards") { scope = .all }
-                .buttonStyle(.borderedProminent).padding(.top, 4)
+                .modifier(AppPrimaryAction()).padding(.top, 4)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 80)
     }

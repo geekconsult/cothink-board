@@ -54,17 +54,23 @@ struct CanvasDragMovement {
 @main
 struct CoThinkApp: App {
     @StateObject private var model = BoardViewModel()
+    @StateObject private var cloudAccount = CloudAccount()
     @StateObject private var agentSession = AgentChatSession()
 
     var body: some Scene {
         WindowGroup {
             WorkspaceView(model: model, agentSession: agentSession)
+                .environmentObject(cloudAccount)
+                .onAppear { cloudAccount.start(model) }
                 .frame(minWidth: 920, minHeight: 620)
         }
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Note") { NotificationCenter.default.post(name: .newNoteCommand, object: nil) }.keyboardShortcut("n", modifiers: .command).disabled(model.board == nil || model.homeVisible)
                 Button("New Board") { model.createBoard() }.keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .appSettings) {
+                Button("Account & Sync…") { cloudAccount.showingPanel = true }
             }
             CommandMenu("Board") {
                 Button("Group Selection or Draw Group") { NotificationCenter.default.post(name: .createGroupCommand, object: nil) }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(model.board == nil || model.homeVisible)
@@ -124,6 +130,8 @@ final class BoardViewModel: ObservableObject {
     private var clipboardChangeCount = -1
     private var pasteCount = 0
     @Published var boards: [Board] = []
+    @Published var deskIDs: Set<String> = []
+    @Published var pinnedListID: String?
     @Published var boardLists: [BoardList] = []
     @Published var lastOpened: [String: Date] = [:]
     @Published var history: [Change] = []
@@ -155,7 +163,7 @@ final class BoardViewModel: ObservableObject {
     @Published var error: String?
     /// True while the Home page is showing; board-canvas menu commands disable themselves.
     @Published var homeVisible = true
-    private var store: BoardStore?
+    private(set) var store: BoardStore?
 
     init(storeDirectory: URL? = nil) {
         do {
@@ -170,13 +178,27 @@ final class BoardViewModel: ObservableObject {
         guard let store else { return }
         let snapshot = try store.pollSnapshot(currentBoardID: board?.id)
         if snapshot.boards != boards { boards = snapshot.boards }
+        if snapshot.deskIDs != deskIDs { deskIDs = snapshot.deskIDs }
+        if snapshot.pinnedListID != pinnedListID { pinnedListID = snapshot.pinnedListID }
         if snapshot.lists != boardLists { boardLists = snapshot.lists }
         if snapshot.history != history { history = snapshot.history }
         if snapshot.lastOpened != lastOpened { lastOpened = snapshot.lastOpened }
-        if snapshot.board?.revision != board?.revision {
+        if snapshot.board?.revision != board?.revision || snapshot.board?.editedAt != board?.editedAt {
             board = snapshot.board
             if snapshot.board == nil { clearSelection() }
         }
+    }
+
+    func switchWorkspace(to next: BoardStore) throws {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked else { throw CloudAccountError.draft }
+        store = next
+        clearSelection()
+        board = nil
+        history = []
+        pendingInlineEditID = nil
+        try refresh()
+        if let first = boards.first { selectBoard(first.id) }
     }
 
     func poll() {
@@ -253,6 +275,32 @@ final class BoardViewModel: ObservableObject {
         do { guard let store else { return nil }; let created = try store.createList(title: "Untitled list"); try refresh(); return created }
         catch { self.error = error.localizedDescription; return nil }
     }
+    var deskListID: String {
+        var id = ":desk"
+        while boardLists.contains(where: { $0.id == id }) { id += ":" }
+        return id
+    }
+
+    var deskList: BoardList {
+        var list = BoardList(title: "On Desk")
+        list.id = deskListID
+        list.boardIDs = boards.filter { deskIDs.contains($0.id) }.map(\.id)
+        return list
+    }
+
+    func toggleDesk(_ board: Board) {
+        do {
+            try store?.setOnDesk(board.id, included: !deskIDs.contains(board.id))
+            try refresh()
+        } catch { self.error = error.localizedDescription; try? refresh() }
+    }
+
+    func toggleHomePin(_ list: BoardList) {
+        do {
+            try store?.setPinnedList(pinnedListID == list.id ? nil : list.id)
+            try refresh()
+        } catch { self.error = error.localizedDescription; try? refresh() }
+    }
     func saveList(_ list: BoardList) -> Bool {
         do { _ = try store?.replaceList(list, expectedRevision: list.revision); try refresh(); return true }
         catch { self.error = error.localizedDescription; try? refresh(); return false }
@@ -285,6 +333,39 @@ final class BoardViewModel: ObservableObject {
             poll()
             return false
         }
+    }
+
+    func placeReminder(_ id: String, title: String, boardID: String, at point: CGPoint, in boxID: String? = nil) -> Bool {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let board, board.id == boardID else { return false }
+        if let boxID {
+            guard let index = board.notes.firstIndex(where: { $0.id == boxID && $0.reminderID != nil }) else { return false }
+            if !board.notes[index].reminderItems.contains(where: { $0.id == id }) {
+                guard mutate({ board in
+                    var box = board.notes[index]
+                    box.additionalReminders = (box.additionalReminders ?? []) + [ReminderReference(id: id, title: title)]
+                    box.height = max(box.height, 60 + Double(box.reminderItems.count) * 60)
+                    board.notes[index] = box
+                }) else { return false }
+            }
+            clearSelection()
+            selectedNoteID = boxID
+            return true
+        }
+        if let existing = board.notes.first(where: { $0.reminderItems.contains(where: { $0.id == id }) }) {
+            chooseNote(existing.id)
+            return true
+        }
+        var card = Note(text: title, x: point.x, y: point.y, width: 240, height: 108, color: "#F6ECD9")
+        while board.notes.contains(where: { abs($0.x - card.x) < 8 && abs($0.y - card.y) < 8 }) {
+            card.x += 30
+            card.y += 30
+        }
+        card.reminderID = id
+        guard mutate({ $0.notes.append(card) }) else { return false }
+        clearSelection()
+        selectedNoteID = card.id
+        return true
     }
 
     func addNote(x: Double = 500, y: Double = 300) {
@@ -662,6 +743,10 @@ final class BoardViewModel: ObservableObject {
 }
 
 struct WorkspaceView: View {
+    @StateObject private var presence = BoardPresence()
+    @State private var inspectorEditID: String?
+    @Environment(\.scenePhase) private var presencePhase
+    @EnvironmentObject private var cloudAccount: CloudAccount
     @ObservedObject var model: BoardViewModel
     let agentSession: AgentChatSession
     @AppStorage("showBoardSidebar") private var showBoardSidebar = true
@@ -684,6 +769,10 @@ struct WorkspaceView: View {
     @State private var wallpaperBoard: Board?
     @State private var pdfExportBoard: Board?
     @State private var showingListManager = false
+    @State private var focusedListID: String?
+    @State private var foldedLists = Set<String>()
+    @State private var reminderBoxID: String?
+    @State private var showingReminders = false
     @State private var editingListID: String?
     @State private var listToDelete: BoardList?
     @State private var showingDeleteList = false
@@ -696,6 +785,7 @@ struct WorkspaceView: View {
     @State private var dropBelow = false
     @State private var dropVisible = false
     @State private var viewport = CGRect.zero
+    @State private var followExtent = CGSize.zero
     @State private var scrollRequest: CGPoint?
     @State private var dragTranslation: CGSize = .zero
     @State private var resizeState: ResizeState?
@@ -716,7 +806,38 @@ struct WorkspaceView: View {
     }
     private var showInspector: Bool { inspectorVisibility.isVisible(hasSelection: model.hasSelection) }
 
-    var body: some View { dialogAndCommandLayer }
+    private var presenceContext: PresenceContext {
+        let boardID = showingHome || presencePhase == .background ? nil : model.board?.id
+        let geometryEdit = draggingID ?? resizeState?.id ?? routePointDrag?.edge.id ?? connectionDrag?.source
+        let objectID = editingObjectID ?? geometryEdit ?? (showingReminders ? reminderBoxID : inspectorEditID)
+        return PresenceContext(login: cloudAccount.expired ? nil : cloudAccount.login, boardID: boardID, editing: objectID)
+    }
+
+    var body: some View {
+        dialogAndCommandLayer.onOpenURL(perform: openBoardLink)
+            .onChange(of: presenceContext, initial: true) { _, context in presence.configure(context); publishBoardCamera() }
+            .onDisappear { presence.close() }
+    }
+
+    private func publishBoardCamera() {
+        presence.updateCamera(BoardCamera(viewport: viewport, zoom: zoom))
+    }
+    private func fitFollowedCamera() {
+        guard let view = presence.followedCamera, viewport.width > 0, viewport.height > 0 else { return }
+        zoom = view.fittedZoom(in: viewport.size)
+        followExtent = CGSize(width: ceil(view.x + viewport.width / (2 * zoom)),
+                              height: ceil(view.y + viewport.height / (2 * zoom)))
+    }
+
+    private func openBoardLink(_ url: URL) {
+        guard url.scheme == "cothink", url.host == "board",
+              let id = url.pathComponents.last, model.boards.contains(where: { $0.id == id }) else { return }
+        model.selectBoard(id)
+        if model.board?.id == id {
+            showingHome = false
+            focusedListID = nil
+        }
+    }
 
     private var canvasRoot: some View {
         VStack(spacing: 0) {
@@ -729,7 +850,7 @@ struct WorkspaceView: View {
                 if let board = model.board {
                     boardCanvas(board).frame(minWidth: 400)
                     if showInspector {
-                        InspectorView(model: model, board: board)
+                        InspectorView(model: model, board: board, presenceID: $inspectorEditID)
                             .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
                     }
                 } else {
@@ -781,6 +902,7 @@ struct WorkspaceView: View {
         .onAppear { model.homeVisible = showingHome; registerAuxiliaryWindows() }
         .onChange(of: showingHome) { _, visible in model.homeVisible = visible }
         .onChange(of: model.board?.id) { _, id in
+            followExtent = .zero
             sidebarSelection = id.map { [$0] } ?? []
             sidebarSelectionAnchor = id
             tool = .note
@@ -791,7 +913,7 @@ struct WorkspaceView: View {
             beginInlineEditing(note)
             model.pendingInlineEditID = nil
         }
-        .onReceive(timer) { _ in model.poll() }
+        .onReceive(timer) { _ in model.poll(); cloudAccount.tick(); presence.pulse() }
         .onReceive(NotificationCenter.default.publisher(for: .createGroupCommand)) { _ in requestGroup() }
         .onReceive(NotificationCenter.default.publisher(for: .requestDeleteSelectionCommand)) { _ in requestDeleteSelection() }
         .onReceive(NotificationCenter.default.publisher(for: .showProjectFiles)) { _ in openProjectFiles() }
@@ -799,7 +921,7 @@ struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .exportPDFCommand)) { _ in openPDFExport() }
         .onReceive(NotificationCenter.default.publisher(for: .zoomInCommand)) { _ in zoomStep(1) }
         .onReceive(NotificationCenter.default.publisher(for: .zoomOutCommand)) { _ in zoomStep(-1) }
-        .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in zoom = 1.0 }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomResetCommand)) { _ in presence.stopFollowing(); zoom = 1.0 }
         .onExitCommand {
             if showingHome { showingHome = false }
             else { model.connectingFrom = nil; selectionStart = nil; selectionEnd = nil; connectionDrag = nil; drawingGroup = false; tool = .note; shapeDraft = nil }
@@ -810,7 +932,7 @@ struct WorkspaceView: View {
         return base
         .confirmationDialog("Delete this board?", isPresented: $showingDeleteBoard) {
             Button("Delete Board", role: .destructive) { model.deleteBoard() }
-        } message: { Text("This removes the board and its history from this Mac.") }
+        } message: { Text("This removes the board and its history. The deletion syncs to its connected web workspace.") }
         .confirmationDialog("Delete \(sidebarSelection.count) boards?", isPresented: $showingDeleteBoards, titleVisibility: .visible) {
             Button("Delete \(sidebarSelection.count) Boards", role: .destructive) {
                 model.deleteBoards(Array(sidebarSelection))
@@ -818,7 +940,7 @@ struct WorkspaceView: View {
                 sidebarSelectionAnchor = nil
             }
             Button("Cancel", role: .cancel) { }
-        } message: { Text("This removes \(sidebarSelection.count) boards and their history from this Mac.") }
+        } message: { Text("This removes \(sidebarSelection.count) boards and their history. The deletions sync to their connected web workspace.") }
         .confirmationDialog("Delete this list?", isPresented: $showingDeleteList) {
             Button("Delete List", role: .destructive) { if let list = listToDelete { model.deleteList(list) }; listToDelete = nil }
         } message: { Text("Boards in the list will remain available.") }
@@ -832,6 +954,15 @@ struct WorkspaceView: View {
             if let board = model.board {
                 ProjectFilesView(model: model, boardID: board.id)
                     .frame(minWidth: 640, minHeight: 420)
+            }
+        }
+        .sheet(isPresented: $cloudAccount.showingPanel) { CloudAccountView(account: cloudAccount) }
+        .sheet(isPresented: $showingReminders) {
+            if let board = model.board {
+                BoardRemindersView(board: board, boxID: reminderBoxID) { id, title in
+                    let point = CGPoint(x: max(0, viewport.midX / zoom - 120), y: max(0, viewport.midY / zoom - 54))
+                    return model.placeReminder(id, title: title, boardID: board.id, at: point, in: reminderBoxID)
+                }.id(board.id)
             }
         }
         .sheet(isPresented: $showingListManager) { ListManagerView(model: model, initialListID: editingListID).frame(minWidth: 650, minHeight: 470) }
@@ -869,38 +1000,71 @@ struct WorkspaceView: View {
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.primary.opacity(0.08)))
                 Button { editingListID = nil; showingListManager = true } label: { Image(systemName: "folder.badge.gearshape").frame(width: 20, height: 20) }
                     .buttonStyle(.plain).modifier(GlassControl()).help("Create, rename, or delete lists").accessibilityLabel("Manage lists")
-                Button(action: model.createBoard) { Image(systemName: "plus").frame(width: 20, height: 20) }
+                Button {
+                    let previousID = model.board?.id
+                    model.createBoard()
+                    if let board = model.board, board.id != previousID, focusedListID == model.deskListID {
+                        model.toggleDesk(board)
+                    } else if let id = model.board?.id, id != previousID, var list = model.boardLists.first(where: { $0.id == focusedListID }) {
+                        list.boardIDs.append(id)
+                        if model.saveList(list) { foldedLists.remove(list.id) } else { focusedListID = nil }
+                    }
+                } label: { Image(systemName: "plus").frame(width: 20, height: 20) }
                     .buttonStyle(.plain).modifier(GlassControl()).help("New board").accessibilityLabel("New board")
             }.padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 12)
+            Picker("Show lists", selection: $focusedListID) {
+                Text("All lists").tag(nil as String?)
+                ForEach([model.deskList] + model.boardLists) { list in Text(list.title).tag(Optional(list.id)) }
+            }
+            .padding(.horizontal, 14).padding(.bottom, 8)
+            .onChange(of: focusedListID) { _, id in
+                if let id { foldedLists.remove(id) }
+                sidebarSelection = []
+                sidebarSelectionAnchor = nil
+            }
+            .onChange(of: model.boardLists.map(\.id)) { _, ids in
+                if let focusedListID, focusedListID != model.deskListID, !ids.contains(focusedListID) { self.focusedListID = nil }
+            }
             List {
-                ForEach(model.boardLists) { list in
-                    Section {
-                        ForEach(model.boards.filter { list.boardIDs.contains($0.id) && sidebarRowMatchesSearch($0, includeTags: false) }) { board in
+                ForEach(visibleLists) { list in
+                    Section(isExpanded: Binding(get: { !foldedLists.contains(list.id) || !search.isEmpty }, set: { expanded in
+                        if expanded { foldedLists.remove(list.id) } else { foldedLists.insert(list.id) }
+                    })) {
+                        let boards = boardsInList(list)
+                        ForEach(boards) { board in
                             sidebarBoardRow(board)
+                                .padding(.leading, 14)
+                                .overlay(alignment: .leading) { Rectangle().fill(.quaternary).frame(width: 1).allowsHitTesting(false) }
+                        }
+                        if boards.isEmpty {
+                            Text(search.isEmpty ? "No boards" : "No matches").font(.caption).foregroundStyle(.secondary).padding(.leading, 14)
                         }
                     } header: {
-                        HStack {
-                            Label(list.title, systemImage: "folder")
-                            if list.flagged { Image(systemName: "flag.fill") }
-                            Spacer()
-                            Menu {
-                                Button("Rename or Edit…") { editingListID = list.id; showingListManager = true }
-                                Button("Delete List…", role: .destructive) { listToDelete = list; showingDeleteList = true }
-                            } label: { Image(systemName: "ellipsis.circle") }
-                                .menuStyle(.borderlessButton).fixedSize().help("Edit or delete \(list.title)")
-                                .accessibilityLabel("Actions for \(list.title)")
-                        }.foregroundStyle(Color(hex: list.color)).help(list.description)
+                        HStack(spacing: 6) {
+                            Image(systemName: list.id == model.deskListID ? "tray.full" : "folder.fill").foregroundStyle(Color(hex: list.color))
+                            Text(list.title).font(.headline).foregroundStyle(.primary).lineLimit(1)
+                            if list.flagged { Image(systemName: "flag.fill").font(.caption2) }
+                            Spacer(minLength: 2)
+                            Text(String(list.boardIDs.count)).monospacedDigit().foregroundStyle(.secondary)
+                            if list.id != model.deskListID {
+                                Menu {
+                                    HomePinButton(model: model, list: list)
+                                    Button("Rename or Edit…") { editingListID = list.id; showingListManager = true }
+                                    Button("Delete List…", role: .destructive) { listToDelete = list; showingDeleteList = true }
+                                } label: { Image(systemName: "ellipsis.circle") }
+                                    .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Actions for \(list.title)")
+                            }
+                        }.help(list.title)
                             .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in handleBoardDrop(providers, targetList: list) }
                     }
                 }
-                Section {
-                ForEach(model.boards.filter { sidebarRowMatchesSearch($0, includeTags: true) }) { board in
-                    sidebarBoardRow(board)
-                }
-                } header: {
-                    Text("All boards")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in handleBoardDrop(providers, targetList: nil) }
+                if focusedListID == nil {
+                    Section {
+                        ForEach(unfiledBoards) { board in sidebarBoardRow(board) }
+                    } header: {
+                        Text("Unfiled boards").frame(maxWidth: .infinity, alignment: .leading)
+                            .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in handleBoardDrop(providers, targetList: nil) }
+                    }
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden)
             HStack(spacing: 9) {
@@ -950,24 +1114,23 @@ struct WorkspaceView: View {
             })
     }
 
-    func sidebarRowMatchesSearch(_ board: Board, includeTags: Bool) -> Bool {
-        search.isEmpty || board.title.localizedCaseInsensitiveContains(search)
-            || (includeTags && (board.tags ?? []).contains(where: { $0.localizedCaseInsensitiveContains(search) }))
-            || board.notes.contains(where: { $0.text.localizedCaseInsensitiveContains(search) })
+    var visibleLists: [BoardList] {
+        ([model.deskList] + model.boardLists).filter { focusedListID == nil || $0.id == focusedListID }
+    }
+
+    func boardsInList(_ list: BoardList) -> [Board] {
+        HomeBoardScope.list(id: list.id).boards(model.boards, lists: [list], search: search)
+    }
+
+    var unfiledBoards: [Board] {
+        HomeBoardScope.unfiled.boards(model.boards, lists: [model.deskList] + model.boardLists, search: search)
     }
 
     var sidebarVisibleOrder: [String] {
         var seen = Set<String>()
-        var order: [String] = []
-        for list in model.boardLists {
-            for board in model.boards where list.boardIDs.contains(board.id) && sidebarRowMatchesSearch(board, includeTags: false) {
-                if seen.insert(board.id).inserted { order.append(board.id) }
-            }
-        }
-        for board in model.boards where sidebarRowMatchesSearch(board, includeTags: true) {
-            if seen.insert(board.id).inserted { order.append(board.id) }
-        }
-        return order
+        let lists = visibleLists.filter { !foldedLists.contains($0.id) || !search.isEmpty }
+        return (lists.flatMap(boardsInList) + (focusedListID == nil ? unfiledBoards : []))
+            .map(\.id).filter { seen.insert($0).inserted }
     }
 
     func sidebarRowTap(_ id: String) {
@@ -1021,12 +1184,19 @@ struct WorkspaceView: View {
             }()
             Task { @MainActor in
                 guard let boardID else { return }
-                if let targetList, let list = self.model.boardLists.first(where: { $0.id == targetList.id }) {
+                if targetList?.id == self.model.deskListID {
+                    if !self.model.deskIDs.contains(boardID), let board = self.model.boards.first(where: { $0.id == boardID }) {
+                        self.model.toggleDesk(board)
+                    }
+                } else if let targetList, let list = self.model.boardLists.first(where: { $0.id == targetList.id }) {
                     guard !list.boardIDs.contains(boardID) else { return }
                     var updated = list
                     updated.boardIDs.append(boardID)
                     _ = self.model.saveList(updated)
                 } else if targetList == nil {
+                    if self.model.deskIDs.contains(boardID), let board = self.model.boards.first(where: { $0.id == boardID }) {
+                        self.model.toggleDesk(board)
+                    }
                     for var list in self.model.boardLists where list.boardIDs.contains(boardID) {
                         list.boardIDs.removeAll { $0 == boardID }
                         _ = self.model.saveList(list)
@@ -1171,6 +1341,16 @@ struct WorkspaceView: View {
         }
     }
 
+    func chooseAttachments() {
+        guard let board = model.board else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Attach"
+        guard panel.runModal() == .OK else { return }
+        let point = CGPoint(x: max(0, viewport.midX / zoom - 100), y: max(0, viewport.midY / zoom - 50))
+        model.importFiles(panel.urls, boardID: board.id, at: point)
+    }
+
     func addNoteInViewport() {
         finishInlineEditing()
         guard viewport.width > 0, viewport.height > 0 else {
@@ -1184,9 +1364,32 @@ struct WorkspaceView: View {
     }
 
     func zoomStep(_ direction: Double) {
+        presence.stopFollowing()
         // Round to one decimal first so repeated steps don't drift (e.g. 0.7 + 0.1 → 0.7999…)
         let base = (zoom * 10).rounded()
         zoom = min(2.0, max(0.5, (base + direction) / 10))
+    }
+
+    private func openReminders(in boxID: String? = nil) {
+        reminderBoxID = boxID
+        showingReminders = true
+    }
+
+    private func reminderMenu(_ board: Board?) -> some View {
+        let selectedBox = board?.notes.first { $0.id == model.selectedNoteID && $0.reminderID != nil }
+        return Menu {
+            if let selectedBox {
+                Button("Add to Selected Box…") { openReminders(in: selectedBox.id) }
+            }
+            Button("New Reminder Box…") { openReminders() }
+        } label: {
+            Image(systemName: "checklist").frame(width: 24, height: 26)
+        } primaryAction: {
+            openReminders(in: selectedBox?.id)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .accessibilityLabel("Add reminder")
+        .help(selectedBox == nil ? "Add a reminder box" : "Add a reminder to the selected box")
     }
 
     func toolbar(_ board: Board?) -> some View {
@@ -1203,6 +1406,12 @@ struct WorkspaceView: View {
                 .help("Home — all boards (⌘⇧H)")
                 .accessibilityLabel("Home")
                 .keyboardShortcut("h", modifiers: [.command, .shift])
+
+            if let board {
+                DeskButton(model: model, board: board)
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut("d", modifiers: [.command, .option, .shift])
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(board.map(\.displayTitle) ?? "CoThink Board")
@@ -1221,8 +1430,8 @@ struct WorkspaceView: View {
                     Text("Selecting \(count) note\(count == 1 ? "" : "s")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else if !model.selectedNoteIDs.isEmpty {
                     Text("\(model.selectedNoteIDs.count) notes selected · ⌘C to copy").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                } else {
-                    Text("Board workspace").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else if let list = model.boardLists.first(where: { $0.boardIDs.contains(board?.id ?? "") }) {
+                    Label(list.title, systemImage: "folder").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
@@ -1239,6 +1448,7 @@ struct WorkspaceView: View {
                 Button("Note", systemImage: "plus.square") { addNoteInViewport() }
                     .modifier(WorkspaceToolStyle())
                     .help("Add a note (⌘N)")
+                reminderMenu(board)
                 Menu {
                     Button("Rectangle") { tool = .shape(.rectangle) }
                     Button("Ellipse") { tool = .shape(.ellipse) }
@@ -1260,12 +1470,12 @@ struct WorkspaceView: View {
             }
             .disabled(board == nil)
             .padding(3)
-            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .modifier(GlassFloatingSurface())
 
             HStack(spacing: 2) {
                 Button { zoomStep(-1) } label: { Image(systemName: "minus").frame(width: 24, height: 26) }
                     .help("Zoom out (⌘−)").accessibilityLabel("Zoom out")
-                Button { zoom = 1.0 } label: {
+                Button { presence.stopFollowing(); zoom = 1.0 } label: {
                     Text("\(Int(zoom * 100))%")
                         .font(.caption.monospacedDigit()).frame(width: 38)
                 }
@@ -1278,6 +1488,8 @@ struct WorkspaceView: View {
 
             Menu {
                 Section("Board") {
+                    Button("Attach Files…", systemImage: "paperclip", action: chooseAttachments).disabled(board == nil)
+                    Button("Reminders…", systemImage: "checklist") { openReminders() }.disabled(board == nil)
                     Button("Project Files…", systemImage: "folder", action: openProjectFiles).disabled(board == nil)
                     Button("Change Wallpaper…", systemImage: "photo.on.rectangle.angled", action: openWallpaper).disabled(board == nil)
                     Button("Export as JSON…", action: model.exportBoard).disabled(board == nil)
@@ -1295,6 +1507,7 @@ struct WorkspaceView: View {
                         Button { appearanceMode = "dark" } label: { themeLabel("Dark", selected: appearanceMode == "dark") }
                     }
                 }
+                Button("Account & Sync…", systemImage: "person.crop.circle") { cloudAccount.showingPanel = true }
                 Section("AI") {
                     Button("Connect an AI Agent…", systemImage: "point.3.connected.trianglepath.dotted") { showingMCP.toggle() }
                 }
@@ -1304,6 +1517,10 @@ struct WorkspaceView: View {
                 .accessibilityLabel("Workspace actions")
                 .popover(isPresented: $showingMCP) { MCPSetupView() }
 
+            if let board {
+                BoardPeopleButton(board: board, account: cloudAccount, presence: presence)
+                    .id(board.id)
+            }
             Button(action: toggleInspector) {
                 Image(systemName: "sidebar.right").frame(width: 22, height: 26)
             }
@@ -1312,7 +1529,10 @@ struct WorkspaceView: View {
             .accessibilityValue("\(showInspector ? "Visible" : "Hidden"), \(inspectorVisibility.rawValue)")
             .keyboardShortcut("2", modifiers: [.command, .option])
             Button { AuxiliaryWindowHost.shared.open(id: "agent-chat") } label: {
-                MascotLogo().frame(width: 27, height: 27).padding(3).accessibilityHidden(true)
+                HStack(spacing: 5) {
+                    MascotLogo().frame(width: 27, height: 27).padding(3).accessibilityHidden(true)
+                    AppVersionLabel()
+                }
             }
             .help("Open the agent chat window")
             .accessibilityLabel("Open the agent chat window")
@@ -1347,6 +1567,42 @@ struct WorkspaceView: View {
         if selected { Label(title, systemImage: "checkmark") } else { Text(title) }
     }
 
+    private func presenceBadges(_ board: Board, indexes: BoardIndexes, hidden: Set<String>, movement: CanvasDragMovement?) -> some View {
+        let others = presence.people.filter { $0.id != cloudAccount.login?.user.id }
+        let ids = Set(others.flatMap(\.objectIDs)).sorted()
+        func anchor(_ id: String) -> CGPoint? {
+            if let note = indexes.note(id), !hidden.contains(id) {
+                let shown = displayed(note, movement: movement)
+                return CGPoint(x: shown.x + shown.width - 4, y: max(10, shown.y + 2))
+            }
+            if let group = board.groups.first(where: { $0.id == id }) {
+                let rect = displayedGroupRect(group, movement: movement)
+                return CGPoint(x: rect.x + rect.width - 4, y: max(10, rect.y + 2))
+            }
+            if let edge = board.connections.first(where: { $0.id == id }),
+               !hidden.contains(edge.from), !hidden.contains(edge.to),
+               let a = indexes.note(edge.from), let b = indexes.note(edge.to) {
+                return ConnectionGeometry(from: displayed(a, movement: movement), to: displayed(b, movement: movement),
+                                          edge: displayedConnection(edge)).labelPosition
+            }
+            return nil
+        }
+        return ForEach(ids, id: \.self) { id in
+            if let point = anchor(id) {
+                let people = others.filter { $0.objectIDs.contains(id) }
+                HStack(spacing: -4) {
+                    ForEach(people) { person in
+                        ProfileFace(id: person.avatar, size: 24)
+                            .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                    }
+                }
+                .shadow(radius: 1).position(point).allowsHitTesting(false)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Editing: " + people.map(\.email).joined(separator: ", "))
+            }
+        }
+    }
+
     func boardCanvas(_ board: Board) -> some View {
         let hidden = board.hiddenNoteIDs()
         let indexes = BoardIndexes(board: board)
@@ -1360,7 +1616,8 @@ struct WorkspaceView: View {
                   let from = indexes.note(edge.from), let to = indexes.note(edge.to) else { return [] }
             return displayedConnection(edge).controlPoints(from: displayed(from, movement: movement), to: displayed(to, movement: movement)).map { BoardRect(x: $0.x, y: $0.y, width: 0, height: 0) }
         }
-        let extent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0, movement: movement) } + routeRects)
+        let baseExtent = BoardRect.canvasExtent(containing: noteRects + board.groups.map { displayedGroupRect($0, movement: movement) } + routeRects)
+        let extent = (width: max(baseExtent.width, followExtent.width), height: max(baseExtent.height, followExtent.height))
         return ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 WallpaperBackgroundView(board: board,
@@ -1450,6 +1707,8 @@ struct WorkspaceView: View {
                         Button("Paste as New Note") { model.pasteSelection() }.disabled(!model.canPaste)
                         Divider()
                         Button("New Note") { addNoteInViewport() }
+                        Button("Attach Files…", action: chooseAttachments)
+                        Button("Reminders…") { openReminders() }
                     }
                 ForEach(board.groups) { group in groupView(group, movement: movement) }
                 ForEach(board.notes.filter { note in
@@ -1476,6 +1735,7 @@ struct WorkspaceView: View {
                     }
                 }
                 ForEach(board.notes.filter { !hidden.contains($0.id) }) { note in noteView(note, board: board, indexes: indexes, movement: movement) }
+                presenceBadges(board, indexes: indexes, hidden: hidden, movement: movement)
                 if let start = selectionStart, let end = selectionEnd {
                     let rect = BoardRect.selection(fromX: start.x, fromY: start.y, toX: end.x, toY: end.y)
                     Rectangle().fill(Color.accentColor.opacity(0.12))
@@ -1516,13 +1776,39 @@ struct WorkspaceView: View {
                 }
             }
             .frame(width: extent.width, height: extent.height)
-            .background(ScrollViewportObserver(viewport: $viewport, request: $scrollRequest))
+            .dropDestination(for: URL.self) { urls, point in
+                model.importFiles(urls, boardID: board.id, at: point)
+            }
+            .overlay(alignment: .topLeading) {
+                BoardCursorLayer(feed: presence.cursors, zoom: zoom)
+                    .allowsHitTesting(false)
+            }
+            .background(ScrollViewportObserver(viewport: $viewport, request: $scrollRequest, following: presence.followedCamera, zoom: zoom, manualScroll: presence.stopFollowing))
             .coordinateSpace(name: "boardCanvas")
             .scaleEffect(zoom, anchor: .topLeading)
             .frame(width: extent.width * zoom, height: extent.height * zoom, alignment: .topLeading)
         }
+        .onChange(of: presence.followedCamera) { _, _ in fitFollowedCamera() }
+        .onChange(of: viewport) { before, after in
+            if before.size != after.size { fitFollowedCamera() }
+            publishBoardCamera()
+        }
+        .onChange(of: zoom) { _, _ in publishBoardCamera() }
+        .overlay(alignment: .top) {
+            if let id = presence.following {
+                HStack {
+                    if let person = presence.people.first(where: { $0.id == id }) {
+                        ProfileFace(id: person.avatar, size: 21)
+                        Text("Following " + person.email).lineLimit(1)
+                    }
+                    Button("Stop following", action: presence.stopFollowing)
+                }.font(.callout).padding(8).background(.regularMaterial, in: Capsule()).padding(.top, 8)
+            }
+        }
+        .overlay(alignment: .bottom) { BoardInvitationBanner(presence: presence) }
+        .modifier(BoardPointerTracking(presence: presence, boardID: board.id, viewport: viewport, zoom: zoom, active: presencePhase == .active))
         .overlay(alignment: .bottomTrailing) {
-            BoardMinimap(board: board, extent: CGSize(width: extent.width, height: extent.height), zoom: zoom, viewport: viewport) { scrollRequest = $0 }
+            BoardMinimap(board: board, extent: CGSize(width: extent.width, height: extent.height), zoom: zoom, viewport: viewport) { presence.stopFollowing(); scrollRequest = $0 }
                 .padding(14)
         }
         .focusable()
@@ -1596,6 +1882,7 @@ struct WorkspaceView: View {
         }
         .simultaneousGesture(MagnificationGesture()
             .onChanged { value in
+                presence.stopFollowing()
                 let factor = value / pinchMagnification
                 pinchMagnification = value
                 zoom = min(2.0, max(0.5, zoom * Double(factor)))
@@ -1749,6 +2036,7 @@ struct WorkspaceView: View {
     func noteView(_ note: Note, board: Board, indexes: BoardIndexes, movement: CanvasDragMovement?) -> some View {
         NoteTile(
             note: displayed(note, movement: movement),
+            boardID: board.id,
             selected: model.selectedNoteID == note.id || model.selectedNoteIDs.contains(note.id) || marqueeHighlight(note),
             isEditing: editingObjectID == note.id && !editingGroupTitle,
             childCount: indexes.childCount(note.id),
@@ -1758,7 +2046,15 @@ struct WorkspaceView: View {
             projectFilesDirectory: board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
                 ?? model.defaultProjectFilesDirectory(for: board.id),
             text: Binding(get: { inlineText }, set: { inlineText = $0; scheduleInlineSave() }),
-            onFinishEditing: finishInlineEditing
+            onFinishEditing: finishInlineEditing,
+            onAddReminder: { openReminders(in: note.id) },
+            onEdit: {
+                if note.shape == .line { model.chooseNote(note.id) }
+                else if !note.isReminderBox { beginInlineEditing(note) }
+            },
+            onOpenFile: { url in
+                if !NSWorkspace.shared.open(url) { model.error = "Could not open " + url.lastPathComponent }
+            }
         )
             .overlay(alignment: .topTrailing) {
                 if let group = board.groupContaining(noteID: note.id) ?? board.groups.last(where: { BoardRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height).containsCenter(of: note) }) {
@@ -1799,9 +2095,6 @@ struct WorkspaceView: View {
                 // so pressing on any member and dragging moves the whole selection.
                 canvasFocused = true
             }
-            .simultaneousGesture(TapGesture(count: 2).onEnded {
-                if note.shape == .line { model.chooseNote(note.id) } else { beginInlineEditing(note) }
-            })
             .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("boardCanvas")).onChanged { value in
                 if draggingID == nil { finishInlineEditing(); NotificationCenter.default.post(name: .flushBoardDraft, object: nil) }
                 guard !model.draftBlocked else { return }
@@ -1935,6 +2228,16 @@ struct WorkspaceView: View {
     }
 }
 
+struct AppVersionLabel: View {
+    var body: some View {
+        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            Text("v\(version)")
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .accessibilityLabel("Version \(version)")
+        }
+    }
+}
+
 struct MascotLogo: View {
     var body: some View {
         if let path = Bundle.main.path(forResource: "Mascot", ofType: "png"), let mascot = ImageCache.image(atPath: path) {
@@ -1952,8 +2255,8 @@ struct WorkspaceToolStyle: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
+            .labelStyle(.iconOnly)
+            .frame(minWidth: 30, minHeight: 30)
             .foregroundStyle(isActive ? Color.accentColor : Color.primary)
             .background {
                 if isActive {
@@ -2081,6 +2384,7 @@ struct DiagonalLine: Shape {
 
 struct NoteTile: View {
     let note: Note
+    let boardID: String
     let selected: Bool
     let isEditing: Bool
     let childCount: Int
@@ -2090,10 +2394,36 @@ struct NoteTile: View {
     let projectFilesDirectory: URL
     @Binding var text: String
     let onFinishEditing: () -> Void
+    let onAddReminder: () -> Void
+    let onEdit: () -> Void
+    let onOpenFile: (URL) -> Void
+
+    private var attachedAssets: [ProjectAsset] { assets.filter { note.assetIDs?.contains($0.id) == true } }
+    private var isFileCard: Bool { note.text.isEmpty && attachedAssets.count == 1 && note.shape == nil && note.reminderID == nil }
+    private var projectImages: [String: NSImage] {
+        Dictionary(uniqueKeysWithValues: attachedAssets.compactMap { asset in
+            let url = projectFilesDirectory.appendingPathComponent(asset.relativePath)
+            guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true,
+                  let image = ImageCache.image(at: url) else { return nil }
+            return (asset.id, image)
+        })
+    }
+
+    private func imagePreview(_ image: NSImage) -> some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
     @FocusState private var textFocused: Bool
 
     var body: some View {
-        Group {
+        let legacyImage = imagePath.flatMap { ImageCache.image(atPath: $0) }
+        let images = projectImages
+        let hasPreview = legacyImage != nil || !images.isEmpty
+        return Group {
             if note.shape == .line {
                 DiagonalLine(flipped: note.lineFlipped == true)
                     .stroke(Color(hex: note.strokeColor ?? "#6F7785"), style: tileBorderStyle)
@@ -2101,7 +2431,10 @@ struct NoteTile: View {
                     .overlay(selectionRing)
             } else {
             VStack(alignment: note.shape == nil || note.shape == .text ? .leading : .center, spacing: 6) {
-                if isEditing {
+                if note.isReminderBox {
+                    ReminderBoxContent(note: note, add: note.reminderID == nil ? nil : onAddReminder)
+                        .foregroundStyle(Color.readableText(on: note.color))
+                } else if isEditing {
                     TextEditor(text: $text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
                         .foregroundStyle(Color.readableText(on: note.color))
@@ -2111,10 +2444,11 @@ struct NoteTile: View {
                         .onChange(of: textFocused) { _, focused in if !focused { onFinishEditing() } }
                         .onAppear { DispatchQueue.main.async { textFocused = true } }
                         .onExitCommand(perform: onFinishEditing)
-                } else if note.shape == nil {
-                    Text(note.text.isEmpty ? "Empty note" : note.text)
+                } else if note.shape == nil && (!note.text.isEmpty || !hasPreview) {
+                    Text(note.text.isEmpty ? ((note.assetIDs ?? []).isEmpty ? "Empty note" : "Attachment") : note.text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
                         .foregroundStyle(Color.readableText(on: note.color).opacity(note.text.isEmpty ? 0.66 : 1))
+                        .layoutPriority(1)
                 } else if note.shape == .text {
                     Text(note.text.isEmpty ? "Empty text" : note.text)
                         .font(.system(size: note.fontSize ?? 15, weight: .medium))
@@ -2125,41 +2459,26 @@ struct NoteTile: View {
                         .foregroundStyle(Color.readableText(on: note.color))
                         .multilineTextAlignment(.center)
                 }
-                if let imagePath, let image = ImageCache.image(atPath: imagePath) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity, maxHeight: max(32, note.height * 0.42))
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                        .allowsHitTesting(false)
+                if let legacyImage {
+                    imagePreview(legacyImage).allowsHitTesting(false)
                 }
-                ForEach(assets.filter { note.assetIDs?.contains($0.id) == true }) { asset in
+                ForEach(attachedAssets) { asset in
                     let url = projectFilesDirectory.appendingPathComponent(asset.relativePath)
-                    if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true,
-                       let image = ImageCache.image(at: url) {
-                        Button { NSWorkspace.shared.open(url) } label: {
-                            Image(nsImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxWidth: .infinity, maxHeight: max(28, note.height * 0.35))
-                                .clipShape(RoundedRectangle(cornerRadius: 5))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Open \(asset.name)")
-                    } else {
-                        Button {
-                            NSWorkspace.shared.open(url)
-                        } label: {
+                    Group {
+                        if let image = images[asset.id] {
+                            imagePreview(image)
+                        } else {
                             Label(asset.name, systemImage: assetSymbol(asset.name))
-                                .font(.caption)
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .font(.caption).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .buttonStyle(.plain)
-                        .help("Open \(asset.name)")
                     }
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { onOpenFile(url) }
+                    .accessibilityLabel(asset.name)
+                    .accessibilityAction(named: "Open file") { onOpenFile(url) }
+                    .help("Double-click to open " + asset.name)
                 }
-                if note.shape == nil || note.shape == .text { Spacer(minLength: 0) }
+                if !hasPreview && (note.shape == nil || note.shape == .text) { Spacer(minLength: 0) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: note.shape == nil || note.shape == .text ? .topLeading : .center)
             .padding(isEditing ? 8 : 16)
@@ -2177,6 +2496,11 @@ struct NoteTile: View {
             .overlay(selectionRing)
             }
         }
+            .onTapGesture(count: 2) {
+                if isFileCard, let asset = attachedAssets.first {
+                    onOpenFile(projectFilesDirectory.appendingPathComponent(asset.relativePath))
+                } else if !isEditing { onEdit() }
+            }
             .overlay(alignment: .topLeading) {
                 if selected {
                     Image(systemName: "checkmark.circle.fill")

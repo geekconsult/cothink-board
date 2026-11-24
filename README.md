@@ -13,6 +13,16 @@ CoThink Board is a local macOS canvas for notes, relationships, project files, a
 
 *The screenshot uses a demonstration board created for this README.*
 
+## Sync with CoThink Web
+
+Open **Account & Sync** from Home or the CoThink Board menu and sign in with your CoThink Web email and password. The first connected account combines its workspace with the existing Mac boards. Review the board count before connecting. A different account or server opens a separate workspace on this Mac.
+
+CoThink Board syncs while the app is open. Offline edits wait on this Mac. If both sides edit the same field, open **Account & Sync** and choose which value to keep. The Mac stores the web session in Keychain and asks you to sign in again when the server expires it. Signing out pauses sync and keeps the downloaded workspace available on this Mac.
+
+The web server must run the matching CoThink Board Web update for attachment sync. Files are limited to 50 MB each. Reminder boxes show the latest details the Mac has synchronized for the items placed on the board. Use Apple Reminders on Mac to change the original items.
+
+For a disposable round-trip test with Chrome and the companion web repo, run `./scripts/test-web-sync.sh`. The script creates a temporary server and account.
+
 ## Highlights
 
 - **A flexible canvas:** create notes and groups, drag and resize objects, adjust colors, borders, line styles, and font sizes. The canvas expands to the right and down as content grows.
@@ -198,11 +208,16 @@ For example, to label and route an existing connection, an MCP client can call `
 | Find and understand boards | `list_boards`, `get_board`, `get_board_context`, `capture_board`, `board_history` |
 | Create and edit boards | `create_board`, `edit_board`, `replace_board`, `import_board`, `delete_board` |
 | Organize lists | `list_board_lists`, `create_board_list`, `update_board_list`, `delete_board_list`, `set_board_metadata` |
+| Create canvas objects | `add_note`, `set_reminder_box` |
 | Work with files and PDF | `add_project_file`, `read_project_file`, `read_note_image`, `export_board_pdf` |
 | Set the wallpaper | `set_board_wallpaper` |
 | Lock and unlock a note | `lock_note`, `unlock_note` |
 | Build and tidy a mindmap tree | `add_child_note`, `set_note_parent`, `tidy_tree_layout` |
 | Travel shared history | `undo`, `redo` |
+
+Create a shared reminder box with `set_reminder_box`, passing `items` and an optional canvas `position` such as `{"x":340,"y":100}`. Each item has a title and can carry a due date or timestamp with timezone, completion, flag and priority. Pass the box’s `note_id` and its complete ordered items to update it. Apple-linked reminders are managed on their owning Mac.
+
+With `add_project_file`, pass a local `source_path` plus either `note_id` to attach to a note or `position` to create an independent file object. Omit both destinations to add the file to the project library.
 
 Existing-board mutations require `expected_revision`; list updates and deletion use their own list revision. `edit_board` supports ordered `rename`, `add`, `update`, and `delete` operations across notes, groups, connections, and assets. The server publishes input schemas and field details through `tools/list`. `lock_note` transfers a note from its previous group if necessary, without changing its position.
 

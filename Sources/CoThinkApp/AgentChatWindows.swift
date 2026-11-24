@@ -112,7 +112,7 @@ struct AgentChatSettingsWindow: View {
                 }
                 HStack {
                     if chat.phase == .stopped || isFailed {
-                        Button("Connect") { connect() }
+                        Button("Connect") { connect() }.modifier(AppPrimaryAction())
                             .disabled(piExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     } else {
                         Button("Disconnect") { session.disconnect() }
@@ -245,7 +245,7 @@ struct MCPServersWindow: View {
                     .padding(.vertical, 3)
                 }
             }
-            .overlay { if servers.isEmpty { EmptyView() } }
+            .frame(maxHeight: servers.isEmpty ? 0 : .infinity)
             VStack(alignment: .leading, spacing: 7) {
                 Text("Add a server").font(.caption.weight(.semibold))
                 HStack(spacing: 8) {
@@ -255,7 +255,7 @@ struct MCPServersWindow: View {
                 }
                 HStack(spacing: 8) {
                     TextField("Env KEY=VALUE (space separated)", text: $newEnv).textFieldStyle(.roundedBorder)
-                    Button("Add") { add() }
+                    Button("Add") { add() }.modifier(AppPrimaryAction())
                         .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty || newCommand.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
@@ -332,7 +332,7 @@ struct ChatHistoryWindow: View {
             HStack {
                 Text("Chat history").font(.headline)
                 Spacer()
-                Button("New chat") { newChat() }
+                Button("New chat", systemImage: "square.and.pencil") { newChat() }.modifier(AppPrimaryAction())
                     .disabled(piExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.board == nil)
             }
             if sessions.isEmpty {

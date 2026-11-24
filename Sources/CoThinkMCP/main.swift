@@ -68,8 +68,10 @@ let tools: [[String: Any]] = [
     tool("delete_board", "Delete a board and its history if its revision has not changed.", ["board_id": stringSchema, "expected_revision": integerSchema], ["board_id", "expected_revision"]),
     tool("replace_board", "Atomically replace an existing complete board. Provide its last observed revision to prevent overwriting concurrent edits.", ["board": objectSchema, "expected_revision": integerSchema], ["board", "expected_revision"]),
     tool("import_board", "Import a complete exported board JSON object. The store assigns an identity as needed.", ["board": objectSchema], ["board"]),
-    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Notes may have parentID, a tree parent note id; null clears it. Notes may also carry shape (rectangle, ellipse, diamond, line, text; null = text note) and lineFlipped (line only; true = the top-right to bottom-left diagonal, absent = top-left to bottom-right). Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections and promotes its tree children to the nearest surviving ancestor.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
-    tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Optionally attach it to a note. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema], ["board_id", "expected_revision", "source_path"]),
+    tool("add_note", "Create a text note at x,y with optional width, height and color. Returns the updated board.", ["board_id": stringSchema, "expected_revision": integerSchema, "text": stringSchema, "x": coordinateSchema, "y": coordinateSchema, "width": ["type": "number", "minimum": 80, "maximum": 700], "height": ["type": "number", "minimum": 50, "maximum": 700], "color": stringSchema], ["board_id","expected_revision","text"]),
+    tool("set_reminder_box", "Create a board reminder object at position or replace the complete ordered items of an existing board-managed box by note_id. Priority is 0 none, 1 high, 5 medium or 9 low. Board reminders sync with the web. Apple-linked items are maintained in the Mac app.", ["board_id": stringSchema, "expected_revision": integerSchema, "note_id": stringSchema, "position": positionSchema, "items": reminderRowsSchema], ["board_id","expected_revision","items"]),
+    tool("edit_board", "Apply ordered edits as one undoable change. Actions: rename (title); add (collection, item); update (collection, id, fields); delete (collection, id). Collections: notes, connections, groups, assets. Required fields: note {id, text, x, y, width, height, color}; connection {id, from, to, arrow}; group {id, title, x, y, width, height, color}; asset {id, name, relativePath}. Notes reference assets with assetIDs. Board-managed reminder boxes store ordered reminderSnapshots with title, completed, due, flagged and priority. Connections support label, direction (oneWay, twoWay, none), route (straight, curved, custom) and routePoints, an array of up to 100 nonnegative board-coordinate objects {x, y}; curved uses the first point, custom uses all points as bends. With no points the app supplies a default. Notes, groups and connections support fontSize from 6 to 96, strokeColor, strokeWidth and strokeStyle. Notes may have parentID, a tree parent note id; null clears it. Notes may also carry shape (rectangle, ellipse, diamond, line, text; null = text note) and lineFlipped (line only; true = the top-right to bottom-left diagonal, absent = top-left to bottom-right). Groups may have memberIDs. Use get_board to obtain the revision. Deleting a note removes its group memberships and connections and promotes its tree children to the nearest surviving ancestor.", ["board_id": stringSchema, "expected_revision": integerSchema, "operations": ["type": "array", "items": ["type": "object"]]], ["board_id", "expected_revision", "operations"]),
+    tool("add_project_file", "Copy a local file into the board's project files folder and add it to the project library. Supply note_id to attach it to a note, or position {x,y} to place it as a standalone file object. If the board has no custom projectFilesPath, the app's default per-board folder is used. The agent process must be able to read source_path.", ["board_id": stringSchema, "expected_revision": integerSchema, "source_path": stringSchema, "note_id": stringSchema, "position": positionSchema], ["board_id", "expected_revision", "source_path"]),
     tool("export_board_pdf", "Export a snapshot of a board to an absolute local PDF path using the same HTML templates as the app. template is editorial, studio, or minimal. Set overwrite to true to replace an existing file. Requires a macOS graphical session and the bundled cothink-pdf helper. This writes to the local filesystem and is disabled in read-only mode.", ["board_id": stringSchema, "expected_revision": integerSchema, "destination_path": stringSchema, "template": ["type": "string", "enum": ["editorial", "studio", "minimal"]], "overwrite": ["type": "boolean"]], ["board_id", "expected_revision", "destination_path", "template"]),
     tool("unlock_note", "Remove a note from all groups so it can move independently. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "expected_revision"]),
     tool("lock_note", "Lock one note to a group so moving either moves them together. Transfers it from any previous group and keeps its current position. This is an undoable board edit.", ["board_id": stringSchema, "note_id": stringSchema, "group_id": stringSchema, "expected_revision": integerSchema], ["board_id", "note_id", "group_id", "expected_revision"]),
@@ -99,7 +101,10 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
         case "add":
             guard let item = operation["item"] as? [String: Any], let itemID = item["id"] as? String, !itemID.isEmpty else { throw ToolFailure(message: "add requires an item with nonempty id") }
             if collection == "notes", item["parent_id"] != nil || item["parentId"] != nil { throw ToolFailure(message: "Invalid key \(item["parent_id"] != nil ? "parent_id" : "parentId") for a note; the correct key is parentID") }
-            if collection == "notes" { try validateShapeFields(item) }
+            if collection == "notes" {
+                try validateShapeFields(item)
+                if let rows = item["reminderSnapshots"], !(rows is NSNull), (rows as? [Any])?.isEmpty != true { _ = try boardReminderRows(rows) }
+            }
             else if let badKey = ["shape", "lineFlipped"].first(where: { item[$0] != nil }) { throw ToolFailure(message: "Invalid key \(badKey) for a \(collection); shape and lineFlipped belong to notes") }
             guard !items.contains(where: { ($0["id"] as? String) == itemID }) else { throw ToolFailure(message: "Item already exists: \(itemID)") }
             items.append(item)
@@ -107,7 +112,13 @@ func editBoard(_ args: [String: Any], store: BoardStore) throws -> Board {
             let itemID = try string(operation, "id")
             guard let index = items.firstIndex(where: { ($0["id"] as? String) == itemID }), var fields = operation["fields"] as? [String: Any], fields["id"] == nil else { throw ToolFailure(message: "update requires an existing id and fields without id") }
             if collection == "notes", fields["parent_id"] != nil || fields["parentId"] != nil { throw ToolFailure(message: "Invalid key \(fields["parent_id"] != nil ? "parent_id" : "parentId") for a note; the correct key is parentID") }
-            if collection == "notes" { try validateShapeFields(fields) }
+            if collection == "notes" {
+                try validateShapeFields(fields)
+                if let rows = fields["reminderSnapshots"] {
+                    guard items[index]["reminderID"] == nil else { throw ToolFailure(message: "Edit Apple-linked reminders in the Mac app") }
+                    if !(rows is NSNull), (rows as? [Any])?.isEmpty != true { fields["reminderSnapshots"] = try object(boardReminderRows(rows)) }
+                }
+            }
             else if let badKey = ["shape", "lineFlipped"].first(where: { fields[$0] != nil }) { throw ToolFailure(message: "Invalid key \(badKey) for a \(collection); shape and lineFlipped belong to notes") }
             if (collection == "groups" || collection == "notes"), fields["x"] != nil || fields["y"] != nil {
                 for key in ["x", "y"] {
@@ -166,7 +177,9 @@ func addProjectFile(_ args: [String: Any], store: BoardStore) throws -> Board {
     guard FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
         throw ToolFailure(message: "source_path must point to an existing file")
     }
-    let noteID = args["note_id"] as? String
+    let noteID = try args["note_id"].map { _ in try string(args, "note_id") }
+    let point = try canvasPosition(args["position"])
+    if noteID != nil && point != nil { throw ToolFailure(message: "Choose note_id or position") }
     if let noteID, !board.notes.contains(where: { $0.id == noteID }) { throw ToolFailure(message: "Note not found: \(noteID)") }
 
     let destinationDirectory = board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -193,6 +206,10 @@ func addProjectFile(_ args: [String: Any], store: BoardStore) throws -> Board {
     updated.assets = board.projectAssets + [asset]
     if let noteID, let noteIndex = updated.notes.firstIndex(where: { $0.id == noteID }) {
         updated.notes[noteIndex].assetIDs = (updated.notes[noteIndex].assetIDs ?? []) + [asset.id]
+    } else if let point {
+        var note = Note(x: point.x, y: point.y, width: 220, height: 116, color: "#E7EEF6")
+        note.assetIDs = [asset.id]
+        updated.notes.append(note)
     }
     do {
         return try store.replace(updated, expectedRevision: expectedRevision, actor: actor)
@@ -279,6 +296,11 @@ func boardContext(_ board: Board) -> [String: Any] {
             "attachments": attachments,
             "has_legacy_image": note.imagePath != nil
         ]
+        if note.isReminderBox {
+            let rows = note.reminderSnapshots ?? note.reminderItems.map { CloudReminderItem(title: $0.title) }
+            entry["reminderSnapshots"] = try? object(rows)
+            entry["appleReminderLinked"] = note.reminderID != nil
+        }
         if let shape = note.shape { entry["shape"] = shape.rawValue }
         if note.lineFlipped == true { entry["lineFlipped"] = true }
         return entry
@@ -447,6 +469,7 @@ func call(_ name: String, _ args: [String: Any], store: BoardStore) throws -> An
     case "import_board":
         guard let board = args["board"] else { throw ToolFailure(message: "Missing board") }
         return try object(store.importBoard(decode(board, as: Board.self), actor: actor))
+    case "add_note", "set_reminder_box": return try object(writeCanvasNote(args, reminder: name == "set_reminder_box", store: store))
     case "edit_board": return try object(editBoard(args, store: store))
     case "add_project_file": return try object(addProjectFile(args, store: store))
     case "export_board_pdf": return try exportBoardPDF(args, store: store)

@@ -3,6 +3,18 @@ import BoardCore
 
 private let organizationColors: [(String, String)] = [("Gray", "#7A8BA8"), ("Red", "#E35D5D"), ("Orange", "#E89B50"), ("Yellow", "#E8C353"), ("Green", "#68AD83"), ("Blue", "#669AD2"), ("Purple", "#A080C7")]
 
+struct HomePinButton: View {
+    @ObservedObject var model: BoardViewModel
+    let list: BoardList
+
+    var body: some View {
+        let pinned = model.pinnedListID == list.id
+        Button(pinned ? "Unpin from Home" : "Pin to Home", systemImage: pinned ? "pin.slash" : "pin") {
+            model.toggleHomePin(list)
+        }
+    }
+}
+
 struct ListManagerView: View {
     @ObservedObject var model: BoardViewModel
     let initialListID: String?
@@ -25,13 +37,8 @@ struct ListManagerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Manage Lists").font(.headline)
-                Spacer()
-                Button { close() } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
-                    .buttonStyle(.plain).help("Close").accessibilityLabel("Close list manager")
-                    .keyboardShortcut(.cancelAction)
-            }.padding(.horizontal, 18).padding(.vertical, 12)
+            AppPanelHeader(title: "Manage Lists", subtitle: "", icon: "folder", closeLabel: "Close list manager", close: close)
+                .padding(.horizontal, 18).padding(.vertical, 12)
             Divider()
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
@@ -57,11 +64,12 @@ struct ListManagerView: View {
                                         }.contentShape(Rectangle())
                                     }.buttonStyle(.plain).accessibilityLabel("Edit list \(list.title)")
                                     Menu {
+                                        HomePinButton(model: model, list: list)
                                         Button("Rename or Edit…") { requestSelection(list.id) }
                                         Button("Delete List…", role: .destructive) { requestDelete(list) }
                                     } label: { Image(systemName: "ellipsis.circle") }
                                         .menuStyle(.borderlessButton).fixedSize()
-                                        .help("Rename or delete \(list.title)")
+                                        .help("Actions for \(list.title)")
                                         .accessibilityLabel("Actions for \(list.title)")
                                 }.padding(8)
                                     .background(selectedID == list.id ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
@@ -103,7 +111,7 @@ struct ListManagerView: View {
                         HStack {
                             Button("Delete List…", role: .destructive) { if let baseline { requestDelete(baseline) } }
                             Spacer()
-                            Button("Save Changes") { _ = save() }
+                            Button("Save Changes") { _ = save() }.modifier(AppPrimaryAction())
                                 .keyboardShortcut(.defaultAction)
                                 .disabled(!hasChanges || (draft?.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true))
                         }.padding(16)
@@ -206,6 +214,7 @@ struct BoardSettingsView: View {
                     .frame(width: 38, height: 38)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Choose board icon")
                 .popover(isPresented: $showingEmojiPicker, arrowEdge: .bottom) {
                     EmojiPickerView(selected: $icon)
                 }
@@ -227,7 +236,7 @@ struct BoardSettingsView: View {
                 updated.flagged = flagged; updated.color = color
                 updated.icon = icon.isEmpty ? nil : icon
                 if model.saveBoardSettings(updated) { dismiss() }
-            }.keyboardShortcut(.defaultAction) }
+            }.modifier(AppPrimaryAction()).keyboardShortcut(.defaultAction) }
         }.padding(24)
     }
 }

@@ -17,6 +17,55 @@ final class HomeBoardScopeTests: XCTestCase {
         return list
     }
 
+    func testDeskMembershipIsIndependentOfListsAndEditTime() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try BoardStore(directory: directory)
+        let board = try store.create(title: "Planning", actor: "user")
+        for title in ["Work", "Research"] {
+            var list = try store.createList(title: title)
+            list.boardIDs = [board.id]
+            _ = try store.replaceList(list, expectedRevision: list.revision)
+        }
+        try store.setOnDesk(board.id, included: true)
+        let reopened = try BoardStore(directory: directory)
+        try reopened.markOpened(board.id)
+        let snapshot = try reopened.pollSnapshot(currentBoardID: board.id)
+        XCTAssertEqual(snapshot.deskIDs, [board.id])
+        XCTAssertEqual(snapshot.board?.editedAt, try XCTUnwrap(board.editedAt))
+        try reopened.setOnDesk(board.id, included: false)
+        XCTAssertEqual(try store.lists().filter { $0.boardIDs.contains(board.id) }.count, 2)
+        XCTAssertEqual(try store.get(board.id), board)
+        try store.setOnDesk(board.id, included: true)
+        try store.deleteBoards([board.id])
+        XCTAssertTrue(try store.pollSnapshot(currentBoardID: nil).deskIDs.isEmpty)
+    }
+
+    func testPinnedListIsExclusivePersistentAndClearsOnDeletion() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try BoardStore(directory: directory)
+        let first = try store.createList(title: "First")
+        let next = try store.createList(title: "Next")
+        try store.setPinnedList(first.id)
+        try store.setPinnedList(next.id)
+        let reopened = try BoardStore(directory: directory)
+        XCTAssertEqual(try reopened.pollSnapshot(currentBoardID: nil).pinnedListID, next.id)
+        try reopened.deleteList(next.id, expectedRevision: next.revision)
+        XCTAssertNil(try store.pollSnapshot(currentBoardID: nil).pinnedListID)
+        XCTAssertThrowsError(try store.setPinnedList(next.id))
+        try store.setPinnedList(first.id)
+        try store.setPinnedList(nil)
+        XCTAssertNil(try store.pollSnapshot(currentBoardID: nil).pinnedListID)
+    }
+
+    func testUnfiledOmitsMembersEvenIfListedTwice() {
+        let boards = [board("a", "Filed"), board("b", "Unfiled", tags: ["ไทย"])]
+        let lists = [list("one", "One", boardIDs: ["a"]), list("two", "Two", boardIDs: ["a"])]
+        XCTAssertEqual(HomeBoardScope.unfiled.boards(boards, lists: lists, search: "").map(\.id), ["b"])
+        XCTAssertEqual(HomeBoardScope.unfiled.boards(boards, lists: lists, search: "ไทย").map(\.id), ["b"])
+    }
+
     func testAllScopeReturnsEveryBoardRegardlessOfLists() {
         let boards = [board("alpha", "Alpha Plan"), board("beta", "Beta Plan"), board("gamma", "Gamma Plan")]
         let lists = [list("first", "First", boardIDs: ["alpha"]), list("second", "Second", boardIDs: ["beta"])]

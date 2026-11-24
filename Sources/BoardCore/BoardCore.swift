@@ -55,6 +55,15 @@ public struct BoardRect: Equatable {
     }
 }
 
+public struct ReminderReference: Codable, Equatable, Identifiable {
+    public var id: String
+    public var title: String
+    public init(id: String, title: String) {
+        self.id = id
+        self.title = title
+    }
+}
+
 public struct Note: Codable, Identifiable, Equatable {
     public var id: String, text: String
     public var x: Double, y: Double, width: Double, height: Double
@@ -66,6 +75,14 @@ public struct Note: Codable, Identifiable, Equatable {
     public var shape: NoteShape?
     public var lineFlipped: Bool?
     public var imagePath: String?
+    public var reminderID: String?
+    public var additionalReminders: [ReminderReference]?
+    public var reminderSnapshots: [CloudReminderItem]?
+    public var isReminderBox: Bool { reminderID != nil || reminderSnapshots?.isEmpty == false }
+    public var reminderItems: [ReminderReference] {
+        guard let reminderID else { return [] }
+        return [ReminderReference(id: reminderID, title: text)] + (additionalReminders ?? [])
+    }
     public var assetIDs: [String]?
     public var parentID: String?
     public var collapsed: Bool?
@@ -146,6 +163,7 @@ public struct Board: Codable, Identifiable, Equatable {
     public var id: String, title: String
     public var revision: Int
     public var notes: [Note], connections: [Connection], groups: [BoardGroup]
+    public var editedAt: Int64?
     public var projectFilesPath: String?
     public var assets: [ProjectAsset]?
     public var tags: [String]? = nil
@@ -592,17 +610,27 @@ public struct BoardList: Codable, Identifiable, Equatable {
     public var color: String = "#7A8BA8"
     public init(title: String) { self.title = title }
 }
-private struct Database: Codable { var entries: [Entry] = []; var lists: [BoardList]? = nil; var lastOpened: [String: Date]? = nil }
+private struct Database: Codable {
+    var entries: [Entry] = []
+    var lists: [BoardList]?
+    var pinnedListID: String?
+    var lastOpened: [String: Date]?
+    var deskIDs: Set<String>?
+    var cloud: CloudCheckpoint?
+}
 public struct PollSnapshot: Equatable {
     public var boards: [Board]
     public var lists: [BoardList]
     public var board: Board?
     public var history: [Change]
+    public var pinnedListID: String?
+    public var deskIDs: Set<String> = []
     public var lastOpened: [String: Date] = [:]
 }
 
 public final class BoardStore {
     private let directory: URL
+    public var storageDirectory: URL { directory }
     private var dataURL: URL { directory.appendingPathComponent("boards.json") }
     private struct CachedDatabase {
         let modified: Date, size: Int, database: Database
@@ -632,6 +660,15 @@ public final class BoardStore {
             db = cached.database
         } else if let stat {
             db = try JSONDecoder().decode(Database.self, from: Data(contentsOf: dataURL))
+            // Existing local boards already record their edits in history. A cloud pull date
+            // describes synchronization, so use the remote edit timestamp for those boards.
+            if db.cloud == nil {
+                for index in db.entries.indices where db.entries[index].board.editedAt == nil {
+                    if let last = db.entries[index].history.last, last.actor != "CoThink Web" {
+                        db.entries[index].board.editedAt = Int64(last.date.timeIntervalSince1970 * 1000)
+                    }
+                }
+            }
             cachedDatabase = CachedDatabase(modified: stat.modified, size: stat.size, database: db)
         } else {
             db = Database()
@@ -649,7 +686,113 @@ public final class BoardStore {
         return result
     }
     public func list() throws -> [Board] { try transact { $0.entries.map(\.board) } }
+    func cloudSnapshot() throws -> (CloudLocalWorkspace, CloudCheckpoint?) {
+        try transact { (CloudLocalWorkspace(boards: $0.entries.map(\.board), lists: $0.lists ?? [], pinnedListID: $0.pinnedListID, deskIDs: $0.deskIDs ?? []), $0.cloud) }
+    }
+    func migrateCloudServer(from old: String, to new: String, userID: String) throws {
+        let (_, marker) = try cloudSnapshot()
+        let previous = CloudAccount(server: old, userID: userID)
+        guard marker?.account == previous else { return }
+        try transact(write: true) { db in
+            guard db.cloud?.account == previous else { return }
+            db.cloud?.account.server = new
+        }
+    }
+    func bindCloud(_ account: CloudAccount) throws {
+        try transact(write: true) { db in
+            if let existing = db.cloud {
+                guard existing.account == account else { throw CloudSyncError.accountChanged }
+            } else {
+                db.cloud = CloudCheckpoint(account: account)
+            }
+        }
+    }
+    func validateCloud(_ workspace: CloudLocalWorkspace) throws {
+        for board in workspace.boards { try validate(board) }
+        let boardIDs = Set(workspace.boards.map(\.id))
+        guard boardIDs.count == workspace.boards.count,
+              Set(workspace.lists.map(\.id)).count == workspace.lists.count,
+              workspace.lists.allSatisfy({ !$0.id.isEmpty && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && Set($0.boardIDs).count == $0.boardIDs.count && Set($0.boardIDs).isSubset(of: boardIDs) })
+        else { throw BoardError.invalid("list membership or duplicate items") }
+    }
+    func applyCloud(_ next: CloudLocalWorkspace, replacing local: CloudLocalWorkspace, checkpoint: CloudCheckpoint) throws {
+        try transact(write: true) { db in
+            guard db.cloud?.account == checkpoint.account else { throw CloudSyncError.accountChanged }
+            guard db.entries.map(\.board) == local.boards, (db.lists ?? []) == local.lists, db.pinnedListID == local.pinnedListID, (db.deskIDs ?? []) == local.deskIDs else { throw BoardError.conflict }
+            let oldEntries = Dictionary(uniqueKeysWithValues: db.entries.map { ($0.board.id, $0) })
+            db.entries = next.boards.map { incoming in
+                var board = incoming
+                var entry = oldEntries[board.id] ?? Entry(board: board)
+                board.revision = entry.board.revision
+                // Backfilling the edit time alone should not enter the board's undo history.
+                var previous = entry.board
+                previous.editedAt = board.editedAt
+                if oldEntries[board.id] == nil || previous != board {
+                    if oldEntries[board.id] != nil {
+                        entry.past.append(entry.board)
+                        if entry.past.count > 100 { entry.past.removeFirst() }
+                        board.revision += 1
+                    }
+                    entry.future = []
+                    entry.history.append(Change(actor: "CoThink Web", revision: board.revision, date: Date()))
+                }
+                entry.board = board
+                return entry
+            }
+            let oldLists = Dictionary(uniqueKeysWithValues: (db.lists ?? []).map { ($0.id, $0) })
+            db.lists = next.lists.map { incoming in
+                var list = incoming
+                if let old = oldLists[list.id] {
+                    list.revision = old.revision
+                    if list != old { list.revision += 1 }
+                }
+                return list
+            }
+            let ids = Set(next.boards.map(\.id))
+            db.lastOpened = db.lastOpened?.filter { ids.contains($0.key) }
+            db.deskIDs = next.deskIDs.intersection(ids)
+            db.pinnedListID = next.pinnedListID
+            db.cloud = checkpoint
+        }
+    }
+    func updateCloudFiles(_ receipts: Set<String>, account: CloudAccount) throws {
+        try transact(write: true) { db in
+            guard db.cloud?.account == account else { throw CloudSyncError.accountChanged }
+            db.cloud?.files = receipts
+        }
+    }
+    // Snapshot refresh is a derived update, so it does not add an undo step.
+    public func refreshReminderSnapshots(_ boards: [Board]) throws {
+        guard !boards.isEmpty else { return }
+        try transact(write: true) { db in
+            let updates = Dictionary(uniqueKeysWithValues: boards.map { ($0.id, $0) })
+            for index in db.entries.indices {
+                let current = db.entries[index].board
+                guard var update = updates[current.id], update.revision == current.revision else { continue }
+                update.editedAt = Self.editTime
+                update.revision += 1
+                db.entries[index].board = update
+            }
+        }
+    }
     public func lists() throws -> [BoardList] { try transact { $0.lists ?? [] } }
+    private static var editTime: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+    public func setOnDesk(_ boardID: String, included: Bool) throws {
+        try transact(write: true) { db in
+            guard db.entries.contains(where: { $0.board.id == boardID }) else { throw BoardError.notFound }
+            var ids = db.deskIDs ?? []
+            if included { ids.insert(boardID) } else { ids.remove(boardID) }
+            db.deskIDs = ids
+        }
+    }
+
+    public func setPinnedList(_ id: String?) throws {
+        try transact(write: true) { db in
+            if let id, !(db.lists ?? []).contains(where: { $0.id == id }) { throw BoardError.notFound }
+            db.pinnedListID = id
+        }
+    }
     public func createList(title: String) throws -> BoardList {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BoardError.invalid("list title") }
         return try transact(write: true) { db in let item = BoardList(title: title); db.lists = (db.lists ?? []) + [item]; return item }
@@ -669,6 +812,7 @@ public final class BoardStore {
             var lists = db.lists ?? []; guard let index = lists.firstIndex(where: { $0.id == id }) else { throw BoardError.notFound }
             guard lists[index].revision == expectedRevision else { throw BoardError.conflict }
             lists.remove(at: index); db.lists = lists
+            if db.pinnedListID == id { db.pinnedListID = nil }
         }
     }
     public func get(_ id: String) throws -> Board { try transact { db in guard let e = db.entries.first(where: { $0.board.id == id }) else { throw BoardError.notFound }; return e.board } }
@@ -676,7 +820,7 @@ public final class BoardStore {
     public func pollSnapshot(currentBoardID: String?) throws -> PollSnapshot {
         try transact { db in
             let current = db.entries.first(where: { $0.board.id == currentBoardID })
-            return PollSnapshot(boards: db.entries.map(\.board), lists: db.lists ?? [], board: current?.board, history: current?.history ?? [], lastOpened: db.lastOpened ?? [:])
+            return PollSnapshot(boards: db.entries.map(\.board), lists: db.lists ?? [], board: current?.board, history: current?.history ?? [], pinnedListID: db.pinnedListID, deskIDs: db.deskIDs ?? [], lastOpened: db.lastOpened ?? [:])
         }
     }
     public func markOpened(_ id: String) throws {
@@ -688,13 +832,14 @@ public final class BoardStore {
         }
     }
     public func create(title: String, actor: String) throws -> Board {
-        let board = Board(title: title)
+        var board = Board(title: title)
+        board.editedAt = Self.editTime
         try validate(board)
         return try transact(write: true) { db in db.entries.append(Entry(board: board, history: [Change(actor: actor, revision: 0, date: Date())])); return board }
     }
     public func importBoard(_ board: Board, actor: String) throws -> Board {
         try validate(board)
-        var copy = board; copy.id = UUID().uuidString; copy.revision = 0
+        var copy = board; copy.id = UUID().uuidString; copy.revision = 0; copy.editedAt = Self.editTime
         return try transact(write: true) { db in db.entries.append(Entry(board: copy, history: [Change(actor: actor, revision: 0, date: Date())])); return copy }
     }
     public func replace(_ board: Board, expectedRevision: Int, actor: String) throws -> Board {
@@ -702,7 +847,10 @@ public final class BoardStore {
         return try transact(write: true) { db in
             guard let i = db.entries.firstIndex(where: { $0.board.id == board.id }) else { throw BoardError.notFound }
             guard db.entries[i].board.revision == expectedRevision else { throw BoardError.conflict }
-            var next = board; next.revision = expectedRevision + 1
+            var next = board
+            next.editedAt = db.entries[i].board.editedAt
+            if next != db.entries[i].board { next.editedAt = Self.editTime }
+            next.revision = expectedRevision + 1
             db.entries[i].past.append(db.entries[i].board)
             if db.entries[i].past.count > 100 { db.entries[i].past.removeFirst() }
             db.entries[i].future = []; db.entries[i].board = next
@@ -710,7 +858,7 @@ public final class BoardStore {
             return next
         }
     }
-    public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i); if var lists = db.lists { for index in lists.indices where lists[index].boardIDs.contains(id) { lists[index].boardIDs.removeAll { $0 == id }; lists[index].revision += 1 }; db.lists = lists }; if var opened = db.lastOpened { opened.removeValue(forKey: id); db.lastOpened = opened } } }
+    public func delete(_ id: String, expectedRevision: Int? = nil) throws { try transact(write: true) { db in guard let i = db.entries.firstIndex(where: { $0.board.id == id }) else { throw BoardError.notFound }; if let expectedRevision, db.entries[i].board.revision != expectedRevision { throw BoardError.conflict }; db.entries.remove(at: i); db.deskIDs?.remove(id); if var lists = db.lists { for index in lists.indices where lists[index].boardIDs.contains(id) { lists[index].boardIDs.removeAll { $0 == id }; lists[index].revision += 1 }; db.lists = lists }; if var opened = db.lastOpened { opened.removeValue(forKey: id); db.lastOpened = opened } } }
     public func move(boardID: String, to anchor: BoardAnchor) throws {
         try transact(write: true) { db in
             guard let from = db.entries.firstIndex(where: { $0.board.id == boardID }) else { throw BoardError.notFound }
@@ -732,6 +880,7 @@ public final class BoardStore {
     public func deleteBoards(_ ids: [String]) throws {
         try transact(write: true) { db in
             let doomed = Set(ids)
+            db.deskIDs?.subtract(doomed)
             db.entries.removeAll { doomed.contains($0.board.id) }
             if var lists = db.lists {
                 for index in lists.indices where lists[index].boardIDs.contains(where: { doomed.contains($0) }) {
@@ -758,6 +907,7 @@ public final class BoardStore {
                 guard let b = db.entries[i].future.popLast() else { throw BoardError.noRedo }; target = b
                 db.entries[i].past.append(current)
             }
+            target.editedAt = Self.editTime
             target.revision = current.revision + 1; db.entries[i].board = target
             db.entries[i].history.append(Change(actor: actor, revision: target.revision, date: Date()))
             return target

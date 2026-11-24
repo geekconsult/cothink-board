@@ -26,6 +26,9 @@ private struct InspectorDraftSnapshot: Equatable {
 struct InspectorView: View {
     @ObservedObject var model: BoardViewModel
     let board: Board
+    @Binding var presenceID: String?
+    @FocusState private var editingField: Bool
+    @State private var presenceReset: Task<Void, Never>?
     @State private var title = ""
     @State private var baselineTitle = ""
     @State private var baselineBoardID: String?
@@ -70,13 +73,16 @@ struct InspectorView: View {
         panel
         .onAppear(perform: loadSelection)
         .onReceive(NotificationCenter.default.publisher(for: .flushBoardDraft)) { _ in savePending() }
-        .onChange(of: selectionKey) { _, _ in savePending(); loadSelection() }
+        .onChange(of: selectionKey) { _, _ in savePending(); presenceID = nil; loadSelection() }
         .onChange(of: board.revision) { _, _ in
             if !hasDraft { loadSelection() }
         }
         .onChange(of: draftSnapshot) { _, _ in scheduleSave() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { savePending() } }
-        .onDisappear { savePending() }
+        .onChange(of: editingField) { _, focused in
+            presenceID = focused ? model.selectedNoteID ?? model.selectedGroupID ?? model.selectedConnectionID : nil
+        }
+        .onDisappear { presenceReset?.cancel(); presenceID = nil; savePending() }
     }
 
     private var panel: some View {
@@ -87,10 +93,7 @@ struct InspectorView: View {
                     .foregroundStyle(.tint)
                     .frame(width: 30, height: 30)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(inspectorTitle).font(.headline)
-                    Text("Properties").font(.caption).foregroundStyle(.secondary)
-                }
+                Text("\(inspectorTitle) properties").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
                 if hasObjectSelection {
                     Button(role: .destructive, action: model.deleteSelection) { Image(systemName: "trash").frame(width: 20, height: 20) }
@@ -126,6 +129,7 @@ struct InspectorView: View {
 
     private var inspectorSymbol: String {
         if !selectedNotes.isEmpty { return "square.on.square" }
+        if note?.isReminderBox == true { return "bell" }
         if note != nil { return "note.text" }
         if group != nil { return "square.dashed" }
         if connection != nil { return "arrow.up.right" }
@@ -134,6 +138,7 @@ struct InspectorView: View {
 
     private var inspectorTitle: String {
         if !selectedNotes.isEmpty { return "\(selectedNotes.count) notes" }
+        if note?.isReminderBox == true { return "Reminder" }
         if note != nil { return "Note" }
         if group != nil { return "Group" }
         if connection != nil { return "Connection" }
@@ -144,7 +149,13 @@ struct InspectorView: View {
 
     @ViewBuilder
     private var selectionProperties: some View {
-        if let note {
+        if let note, note.isReminderBox {
+            ReminderBoxContent(note: note)
+            colors
+            DisclosureGroup("Position and size", isExpanded: $showingNotePosition) {
+                geometryFields.padding(.top, 10)
+            }
+        } else if let note {
             noteProperties(note)
         } else if let group {
             groupProperties(group)
@@ -180,7 +191,7 @@ struct InspectorView: View {
     private func noteProperties(_ note: Note) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("NOTE").font(.caption.bold()).foregroundStyle(.secondary)
-            TextEditor(text: $text).font(.body).frame(minHeight: 100)
+            TextEditor(text: $text).focused($editingField).font(.body).frame(minHeight: 100)
                 .scrollContentBackground(.hidden).padding(6)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.1)))
@@ -257,7 +268,7 @@ struct InspectorView: View {
 
     private func groupProperties(_ group: BoardGroup) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            TextField("Group name", text: $text)
+            TextField("Group name", text: $text).focused($editingField)
             Label("\(group.memberIDs?.count ?? 0) locked notes", systemImage: "lock")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Lock notes inside group") { model.lockNotes(in: group.id) }
@@ -286,7 +297,7 @@ struct InspectorView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("From: \(board.notes.first(where: { $0.id == connection.from })?.text ?? connection.from)").lineLimit(2)
             Text("To: \(board.notes.first(where: { $0.id == connection.to })?.text ?? connection.to)").lineLimit(2)
-            TextField("Relationship label", text: $label)
+            TextField("Relationship label", text: $label).focused($editingField)
             fontSizeControl
             Picker("Direction", selection: $direction) {
                 Text("One-way →").tag(ConnectionDirection.oneWay)
@@ -610,6 +621,12 @@ struct InspectorView: View {
         saveTask?.cancel()
         guard hasDraft else { saveStatus = "Saved"; return }
         model.draftBlocked = false
+        presenceReset?.cancel()
+        presenceID = model.selectedNoteID ?? model.selectedGroupID ?? model.selectedConnectionID
+        presenceReset = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            if !Task.isCancelled && !editingField { presenceID = nil }
+        }
         saveStatus = "Saving…"
         saveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)

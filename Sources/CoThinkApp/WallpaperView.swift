@@ -81,15 +81,7 @@ struct WallpaperSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Board wallpaper").font(.title2.bold())
-                    Text(original.title).font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
-                    .buttonStyle(.plain).help("Close").accessibilityLabel("Close wallpaper settings")
-            }
+            AppPanelHeader(title: "Board Wallpaper", subtitle: original.displayTitle, icon: "photo", closeLabel: "Close wallpaper settings", close: { dismiss() })
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("BACKGROUND COLOR").font(.caption.bold()).foregroundStyle(.secondary)
@@ -155,7 +147,7 @@ struct WallpaperSettingsView: View {
                 }
             }
             Divider()
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save Wallpaper") { save() }.keyboardShortcut(.defaultAction) }
+            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save Wallpaper") { save() }.modifier(AppPrimaryAction()).keyboardShortcut(.defaultAction) }
         }
         .padding(24)
         .frame(minWidth: 650, minHeight: 390)

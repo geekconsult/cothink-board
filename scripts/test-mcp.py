@@ -167,6 +167,29 @@ assert sh['revision']==3 and [n for n in sh['notes'] if n['id']=='ln2'][0].get('
 _,shc=call(310,'get_board_context',{'board_id':sh['id']})
 assert [n for n in shc['notes'] if n['id']=='ln2'][0].get('lineFlipped') is None,shc
 r,e=call(311,'edit_board',{'board_id':sh['id'],'expected_revision':3,'operations':[{'action':'update','collection':'groups','id':'g','fields':{'shape':'rectangle'}}]});assert r['isError'] and 'notes' in e,e
+_,canvas=call(300,'create_board',{'title':'Canvas objects'})
+def canvas_write(name,revision,**args):
+ result,value=call(301,name,{'board_id':canvas['id'],'expected_revision':revision,**args})
+ assert not result.get('isError'),value
+ return value
+plain=canvas_write('add_note',0,text='Agenda',x=40,y=70)['notes'][0]
+rows=[{'title':'Check contract','due':'2026-11-30','priority':1,'flagged':True},{'title':'Send copy','completed':True}]
+box=canvas_write('set_reminder_box',1,items=rows,position={'x':340,'y':70})['notes'][-1]
+assert box['reminderSnapshots']==rows and box['x']==340
+rows[0].update(due='2026-11-30T11:30:00+07:00',completed=True)
+canvas_write('set_reminder_box',2,note_id=box['id'],items=rows)
+bad,_=call(302,'set_reminder_box',{'board_id':canvas['id'],'expected_revision':3,'items':[{'title':'bad','due':'tomorrow'}]})
+assert bad['isError']
+source=Path(home)/'agenda.txt'
+source.write_text('agenda attachment')
+canvas_write('add_project_file',3,source_path=str(source),note_id=plain['id'])
+files=canvas_write('add_project_file',4,source_path=str(source),position={'x':240,'y':280})
+card=files['notes'][-1]
+assert card['text']=='' and card['x']==240 and card['assetIDs']==[files['assets'][-1]['id']]
+_,context=call(303,'get_board_context',{'board_id':canvas['id']})
+assert context['notes'][0]['attachments'][0]['name']=='agenda.txt' and context['notes'][1]['reminderSnapshots']==rows
+capture,_=call(304,'capture_board',{'board_id':canvas['id']})
+assert capture['content'][1]['type']=='image'
 p.stdin.close();p.wait(timeout=5);assert p.returncode==0,p.stderr.read()
 env['COTHINK_MCP_READ_ONLY']='1'
 p=subprocess.Popen([binary],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)

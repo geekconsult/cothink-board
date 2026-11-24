@@ -6,13 +6,23 @@ import BoardCore
 struct ScrollViewportObserver: NSViewRepresentable {
     @Binding var viewport: CGRect
     @Binding var request: CGPoint?
+    var following: BoardCamera? = nil
+    var zoom: CGFloat = 1
+    var manualScroll: () -> Void = {}
     func makeNSView(context: Context) -> ObserverView {
         let view = ObserverView()
         view.onChange = { rect in DispatchQueue.main.async { viewport = rect } }
         return view
     }
     func updateNSView(_ view: ObserverView, context: Context) {
+        view.manualScroll = manualScroll
+        view.following = following
+        view.scale = zoom
         view.attach()
+        if following != nil {
+            view.scheduleFollow()
+            return
+        }
         if let point = request, let scroll = view.enclosingScrollView {
             let clip = scroll.contentView
             let x = max(0, min(point.x - clip.bounds.width / 2, max(0, (scroll.documentView?.bounds.width ?? 0) - clip.bounds.width)))
@@ -24,18 +34,47 @@ struct ScrollViewportObserver: NSViewRepresentable {
     final class ObserverView: NSView {
         var onChange: ((CGRect) -> Void)?
         private weak var clip: NSClipView?
-        private var token: NSObjectProtocol?
+        var following: BoardCamera?
+        var scale: CGFloat = 1
+        var manualScroll: (() -> Void)?
+        private var tokens: [NSObjectProtocol] = []
+        private var pending = false
+        func scheduleFollow() {
+            guard following != nil, !pending else { return }
+            pending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                pending = false
+                guard let camera = following, let scroll = enclosingScrollView, let document = scroll.documentView else { return }
+                let clip = scroll.contentView
+                let point = camera.scrollOrigin(in: clip.bounds.size, document: document.bounds.size, scale: scale)
+                if abs(clip.bounds.minX - point.x) > 0.75 || abs(clip.bounds.minY - point.y) > 0.75 {
+                    clip.scroll(to: point)
+                    scroll.reflectScrolledClipView(clip)
+                }
+            }
+        }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attach() }
         func attach() {
             guard let newClip = enclosingScrollView?.contentView, clip !== newClip else { return }
-            if let token { NotificationCenter.default.removeObserver(token) }
+            tokens.forEach(NotificationCenter.default.removeObserver); tokens.removeAll()
             clip = newClip; newClip.postsBoundsChangedNotifications = true
-            token = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: newClip, queue: .main) { [weak self, weak newClip] _ in
-                if let rect = newClip?.bounds { self?.onChange?(rect) }
+            tokens.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: newClip, queue: .main) { [weak self, weak newClip] _ in
+                if let rect = newClip?.bounds { self?.onChange?(rect); self?.scheduleFollow() }
+            })
+            if let scroll = enclosingScrollView {
+                tokens.append(NotificationCenter.default.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in
+                    self?.following = nil
+                    self?.manualScroll?()
+                })
+                if let document = scroll.documentView {
+                    document.postsFrameChangedNotifications = true
+                    tokens.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: document, queue: .main) { [weak self] _ in self?.scheduleFollow() })
+                }
             }
             onChange?(newClip.bounds)
         }
-        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+        deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
     }
 }
 

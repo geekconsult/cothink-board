@@ -179,8 +179,15 @@ public enum BoardPDFHTML {
             let label = edge.label.map { "<text x=\"\(number(labelPoint.x))\" y=\"\(number(labelPoint.y-5))\" text-anchor=\"middle\" font-size=\"\(number(edge.fontSize ?? 11))\" fill=\"#39414d\">\(escape(short($0)))</text>" } ?? ""
             return "<path d=\"\(d)\" fill=\"none\" stroke=\"\(color(edge.strokeColor, fallback: "#737d8e"))\" stroke-width=\"\(number(edge.strokeWidth ?? 1.5))\"\(dash)/>\(arrows)\(label)"
         }.joined()
+        let fileNames = Dictionary(board.projectAssets.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let cards = board.notes.filter { !hidden.contains($0.id) }.enumerated().map { index, n in
-            let text = escape(String(short(n.text).prefix(40)))
+            let caption: String
+            if n.isReminderBox, let first = n.reminderSnapshots?.first {
+                caption = (first.completed == true ? "☑ " : "☐ ") + first.title
+            } else if n.text.isEmpty, let asset = n.assetIDs?.first, let name = fileNames[asset] {
+                caption = name
+            } else { caption = n.text }
+            let text = escape(String(short(caption).prefix(40)))
             let fill = color(n.color, fallback: "#FFF1B8")
             let stroke = color(n.strokeColor, fallback: "#939aa4")
             let strokeAttrs = n.shape == nil ? "" : " stroke-width=\"\(number(n.strokeWidth ?? 1))\"\(n.strokeStyle == .dashed ? " stroke-dasharray=\"8 5\"" : n.strokeStyle == .dotted ? " stroke-dasharray=\"1 4\"" : "")"

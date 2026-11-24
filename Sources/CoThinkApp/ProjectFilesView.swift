@@ -18,20 +18,12 @@ struct ProjectFilesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Project Files").font(.title2.bold())
-                    Text(board?.title ?? "Board").font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Done") { dismiss() }
-            }
-
+            AppPanelHeader(title: "Project Files", subtitle: board?.displayTitle ?? "", icon: "folder", closeLabel: "Close project files", close: { dismiss() })
             VStack(alignment: .leading, spacing: 8) {
                 Text("STORAGE LOCATION").font(.caption.bold()).foregroundStyle(.secondary)
                 Text(folderURL.path).font(.caption.monospaced()).lineLimit(1).help(folderURL.path)
                 HStack {
-                    Button("Add Files…", systemImage: "plus") { addFiles() }
+                    Button("Add Files…", systemImage: "plus") { addFiles() }.modifier(AppPrimaryAction())
                     Button("Choose Folder…", systemImage: "folder.badge.gearshape") { chooseFolder() }
                     Button("Show in Finder", systemImage: "arrow.up.forward.app") {
                         NSWorkspace.shared.open(folderURL)
@@ -39,7 +31,7 @@ struct ProjectFilesView: View {
                 }
             }
             .padding(14)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .modifier(GlassFloatingSurface())
 
             if let board, !board.projectAssets.isEmpty {
                 List {
@@ -98,25 +90,8 @@ struct ProjectFilesView: View {
         panel.prompt = "Add to Project"
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
 
-        do {
-            try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
-            var added: [ProjectAsset] = []
-            for source in panel.urls {
-                let destination = uniqueDestination(for: source.lastPathComponent, in: folderURL)
-                try FileManager.default.copyItem(at: source, to: destination)
-                added.append(ProjectAsset(name: source.lastPathComponent, relativePath: destination.lastPathComponent))
-            }
-            let path = folderURL.path
-            guard model.mutate({ current in
-                guard current.id == board.id else { return }
-                current.projectFilesPath = path
-                current.assets = (current.assets ?? []) + added
-            }) else {
-                errorMessage = model.error ?? "Could not update the board."
-                return
-            }
-        } catch {
-            errorMessage = "Could not copy the selected file. \(error.localizedDescription)"
+        if !model.importFiles(panel.urls, boardID: board.id) {
+            errorMessage = model.error ?? "Could not add files."
         }
     }
 
@@ -171,18 +146,71 @@ struct ProjectFilesView: View {
             }
         }
     }
+}
 
-    private func uniqueDestination(for fileName: String, in directory: URL) -> URL {
-        let source = URL(fileURLWithPath: fileName)
-        let base = source.deletingPathExtension().lastPathComponent
-        let ext = source.pathExtension
-        var candidate = directory.appendingPathComponent(fileName)
-        var suffix = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            let name = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
-            candidate = directory.appendingPathComponent(name)
-            suffix += 1
+private func uniqueDestination(for fileName: String, in directory: URL) -> URL {
+    let source = URL(fileURLWithPath: fileName)
+    let base = source.deletingPathExtension().lastPathComponent
+    let ext = source.pathExtension
+    var candidate = directory.appendingPathComponent(fileName)
+    var suffix = 2
+    while FileManager.default.fileExists(atPath: candidate.path) {
+        let name = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
+        candidate = directory.appendingPathComponent(name)
+        suffix += 1
+    }
+    return candidate
+}
+
+extension BoardViewModel {
+    @discardableResult
+    func importFiles(_ urls: [URL], boardID: String, at location: CGPoint? = nil) -> Bool {
+        NotificationCenter.default.post(name: .flushBoardDraft, object: nil)
+        guard !draftBlocked, let board, board.id == boardID, !urls.isEmpty else { return false }
+        let folder = board.projectFilesPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? defaultProjectFilesDirectory(for: boardID)
+        var copies: [URL] = []
+        var assets: [ProjectAsset] = []
+        var notes: [Note] = []
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            for (index, source) in urls.enumerated() {
+                let scoped = source.startAccessingSecurityScopedResource()
+                defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+                guard source.isFileURL, try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                    throw BoardError.invalid("Choose a file to attach.")
+                }
+                let target = uniqueDestination(for: source.lastPathComponent, in: folder)
+                try FileManager.default.copyItem(at: source, to: target)
+                copies.append(target)
+                let asset = ProjectAsset(name: source.lastPathComponent, relativePath: target.lastPathComponent)
+                assets.append(asset)
+                if let location {
+                    var note = Note(x: max(0, location.x) + Double(index % 3) * 236,
+                                    y: max(0, location.y) + Double(index / 3) * 132,
+                                    width: 220, height: 116, color: "#E7EEF6")
+                    note.assetIDs = [asset.id]
+                    notes.append(note)
+                }
+            }
+        } catch {
+            for copy in copies { try? FileManager.default.removeItem(at: copy) }
+            self.error = error.localizedDescription
+            return false
         }
-        return candidate
+        let saved = mutate { current in
+            current.projectFilesPath = folder.path
+            current.assets = current.projectAssets + assets
+            current.notes.append(contentsOf: notes)
+        }
+        // A post-commit refresh can fail. Only remove files after confirming the
+        // persisted board does not reference them.
+        if !saved, let persisted = try? store?.get(boardID) {
+            let paths = Set(persisted.projectAssets.map(\.relativePath))
+            for copy in copies where !paths.contains(copy.lastPathComponent) {
+                try? FileManager.default.removeItem(at: copy)
+            }
+        }
+        return saved
     }
 }

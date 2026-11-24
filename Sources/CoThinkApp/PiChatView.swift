@@ -73,6 +73,8 @@ struct PiChatView: View {
             ? "Thinking: \(chat.thinkingLevel) — click for fast replies (\(chat.fastThinkingLevel))"
             : "Fast replies (\(chat.thinkingLevel)) — click to restore (\(chat.rememberedThinkingLevel))"
     }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -108,7 +110,7 @@ struct PiChatView: View {
                         Image(systemName: dictationActive ? "mic.fill" : "mic")
                             .font(.title2)
                             .foregroundStyle(dictationActive ? Color.red : Color.accentColor)
-                            .symbolEffect(.pulse, options: .repeating, isActive: dictation.phase == .listening)
+                            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && dictation.phase == .listening)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(dictationActive ? "Stop dictation" : "Dictate")
@@ -133,7 +135,7 @@ struct PiChatView: View {
                         Button { chat.cancel() } label: { Image(systemName: "stop.fill") }
                             .help("Stop response").accessibilityLabel("Stop response")
                     }
-                    Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2).frame(width: 30, height: 30) }
                         .buttonStyle(.plain).help("Send message").accessibilityLabel("Send message")
                         .disabled(chat.phase != .ready || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
@@ -165,7 +167,7 @@ struct PiChatView: View {
                     unavailableMessage: unavailableVoiceMessage,
                     jevFilterEnabled: $voiceFilterEnabled,
                     speakRepliesEnabled: $speakRepliesEnabled,
-                    onClose: { withAnimation(.easeInOut(duration: 0.3)) { voiceMode = false; dictation.stop() } },
+                    onClose: { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { voiceMode = false; dictation.stop() } },
                     onMicToggle: { dictation.toggle() }
                 )
                 .zIndex(2)
@@ -233,7 +235,7 @@ struct PiChatView: View {
 
             ContextUsageBadge(usage: chat.contextUsage, conversationEstimate: conversationEstimate)
             Button {
-                withAnimation(.easeInOut(duration: 0.3)) { toggleVoiceMode() }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { toggleVoiceMode() }
             } label: { Image(systemName: "waveform").frame(width: 24, height: 24) }
                 .buttonStyle(.borderless).help("Voice mode").accessibilityLabel("Voice mode")
             Menu {
